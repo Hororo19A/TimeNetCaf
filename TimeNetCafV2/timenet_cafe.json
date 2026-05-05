@@ -1,0 +1,90 @@
+{
+  "users": [
+    {
+      "id": "admin-1",
+      "username": "admin",
+      "password": "admin123",
+      "role": "admin"
+    },
+    {
+      "id": "user-1777980574715",
+      "username": "hororo",
+      "password": "hororo123",
+      "role": "customer"
+    }
+  ],
+  "computers": [
+    {
+      "id": "pc-1",
+      "name": "PC 01",
+      "status": "occupied",
+      "currentSessionId": "sess-1777980583431"
+    },
+    {
+      "id": "pc-2",
+      "name": "PC 02",
+      "status": "available",
+      "currentSessionId": null
+    },
+    {
+      "id": "pc-3",
+      "name": "PC 03",
+      "status": "available",
+      "currentSessionId": null
+    },
+    {
+      "id": "pc-4",
+      "name": "PC 04",
+      "status": "available",
+      "currentSessionId": null
+    },
+    {
+      "id": "pc-5",
+      "name": "PC 05",
+      "status": "available",
+      "currentSessionId": null
+    },
+    {
+      "id": "pc-6",
+      "name": "PC 06",
+      "status": "available",
+      "currentSessionId": null
+    },
+    {
+      "id": "pc-7",
+      "name": "PC 07",
+      "status": "available",
+      "currentSessionId": null
+    },
+    {
+      "id": "pc-8",
+      "name": "PC 08",
+      "status": "available",
+      "currentSessionId": null
+    }
+  ],
+  "sessions": [
+    {
+      "id": "sess-1777980583431",
+      "userId": "user-1777980574715",
+      "computerId": "pc-1",
+      "startTime": 1777980602498,
+      "duration": 15,
+      "cost": 3.75,
+      "status": "active",
+      "voucherCode": "TN-QW32VTQW",
+      "paidUpfront": true
+    }
+  ],
+  "payments": [
+    {
+      "id": "pay-1777980583433",
+      "sessionId": "sess-1777980583431",
+      "userId": "user-1777980574715",
+      "amount": 3.75,
+      "method": "cash",
+      "timestamp": 1777980583433,
+      "receiptNo": "RCPT-583431-480"
+    }
+  ]
+}
