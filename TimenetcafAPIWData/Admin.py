@@ -50,6 +50,7 @@ AMBER      = "#f5a623"
 AMBER2     = "#e08c00"
 AMBER_DIM  = "#2d1e00"
 CYAN       = "#00c8e8"
+CYAN2      = "#00a0bb"
 CYAN_DIM   = "#002d38"
 GREEN      = "#00e56e"
 GREEN2     = "#00b855"
@@ -107,8 +108,10 @@ def _norm_session(r):
         "startTime":    r.get("start_time")  or r.get("startTime"),
         "endTime":      r.get("end_time")    or r.get("endTime"),
         "pausedAt":     r.get("paused_at")   or r.get("pausedAt"),
-        "pausedRemain": r.get("paused_remain")or r.get("pausedRemain", 0),
-        "voucherCode":  r.get("voucher_code")or r.get("voucherCode"),
+        # ── FIX: paused_remain is stored in milliseconds by Customer2.py ──
+        # Do NOT multiply by 1000 here.
+        "pausedRemain": int(r.get("paused_remain") or r.get("pausedRemain") or 0),
+        "voucherCode":  r.get("voucher_code") or r.get("voucherCode"),
     }
 
 # ════════════════════════════════════════════════════════════════════
@@ -139,6 +142,7 @@ def today_start_ms():
     return int(d.timestamp() * 1000)
 
 def ms_to_hms(ms):
+    """Convert milliseconds to HH:MM:SS string."""
     ms = max(0, int(ms))
     h  = ms // 3_600_000
     m  = (ms % 3_600_000) // 60_000
@@ -283,7 +287,7 @@ def stat_card(parent, icon, title, value, color):
     return f, val_lbl
 
 # ════════════════════════════════════════════════════════════════════
-#  THEMED DIALOG  (with optional auto-dismiss)
+#  THEMED DIALOG
 # ════════════════════════════════════════════════════════════════════
 
 class ThemedDialog(tk.Toplevel):
@@ -314,7 +318,6 @@ class ThemedDialog(tk.Toplevel):
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         self.update_idletasks()
         add_gradient_border(self, thickness=3, c1=color, c2=PURPLE)
-        # Auto-dismiss after given ms if specified
         if auto_dismiss_ms:
             self.after(auto_dismiss_ms, self._close)
 
@@ -817,7 +820,7 @@ class AdminDashboard(tk.Frame):
             return
         now = now_ms()
 
-        # Tick active (counting-down) sessions
+        # Tick live (active) sessions — count down from end_ms
         for cid, info in list(self._live_rows.items()):
             end_ms   = info.get("end_ms", now)
             diff     = end_ms - now
@@ -835,8 +838,9 @@ class AdminDashboard(tk.Frame):
             except Exception:
                 pass
 
-        # Tick paused sessions (show frozen remaining time, no countdown)
-        for cid, info in list(self._paused_rows.items()):
+        # Tick paused sessions — remain_ms is STATIC (frozen when paused)
+        # We just display the stored value; it does NOT count down while paused.
+        for sid, info in list(self._paused_rows.items()):
             remain_ms = info.get("remain_ms", 0)
             try:
                 info["time_lbl"].config(text=ms_to_hms(remain_ms), fg=AMBER)
@@ -865,60 +869,76 @@ class AdminDashboard(tk.Frame):
         self._build_live_paused_section()
         self._build_fleet_section()
 
-    def _section(self, title):
-        card = tk.Frame(self._ov, bg=BG2, highlightthickness=1,
-                        highlightbackground=BORDER2)
-        card.pack(padx=32, pady=(16, 0), fill="x")
-        hdr = tk.Frame(card, bg=BG2)
-        hdr.pack(fill="x", padx=24, pady=(18, 0))
-        tk.Label(hdr, text=title, fg=TEXT, bg=BG2,
-                 font=(FD, 13, "bold")).pack(side="left")
-        hsep(card, BORDER).pack(fill="x", padx=20, pady=12)
-        return card
-
-    # ── FIX 1: Split live + paused into side-by-side columns ─────────
     def _build_live_paused_section(self):
+        """
+        Fixed 50/50 split Sessions card.
+        Left = LIVE SESSIONS, Right = PAUSED SESSIONS.
+        A 1-px vertical divider sits in the middle — it never moves
+        because both columns are weight=1 in the same grid row.
+        The card has a fixed minimum height so it never collapses.
+        """
         card = tk.Frame(self._ov, bg=BG2, highlightthickness=1,
                         highlightbackground=BORDER2)
         card.pack(padx=32, pady=(16, 0), fill="x")
 
+        # ── Card header ──────────────────────────────────────────────
         hdr = tk.Frame(card, bg=BG2)
         hdr.pack(fill="x", padx=24, pady=(18, 0))
         tk.Label(hdr, text="📡  Sessions", fg=TEXT, bg=BG2,
                  font=(FD, 13, "bold")).pack(side="left")
         hsep(card, BORDER).pack(fill="x", padx=20, pady=12)
 
-        cols_frame = tk.Frame(card, bg=BG2)
-        cols_frame.pack(fill="x", padx=20, pady=(0, 18))
-        cols_frame.columnconfigure(0, weight=1)
-        cols_frame.columnconfigure(1, weight=0)   # divider
-        cols_frame.columnconfigure(2, weight=1)
+        # ── Body: strict 50/50 grid, never resizes ───────────────────
+        body = tk.Frame(card, bg=BG2)
+        body.pack(fill="x", padx=20, pady=(0, 18))
+        body.columnconfigure(0, weight=1, uniform="half")
+        body.columnconfigure(1, weight=0)          # divider — fixed width
+        body.columnconfigure(2, weight=1, uniform="half")
 
-        # Left: Live (active)
-        live_col = tk.Frame(cols_frame, bg=BG2)
-        live_col.grid(row=0, column=0, sticky="nsew")
-        live_header = tk.Frame(live_col, bg=BG2)
-        live_header.pack(fill="x", pady=(0, 6))
-        tk.Frame(live_header, bg=GREEN, width=3, height=16).pack(side="left", padx=(0, 6))
-        tk.Label(live_header, text="LIVE SESSIONS", fg=GREEN, bg=BG2,
+        # ── LEFT: Live Sessions ──────────────────────────────────────
+        live_col = tk.Frame(body, bg=BG2)
+        live_col.grid(row=0, column=0, sticky="nsew", padx=(0, 0))
+
+        live_hdr = tk.Frame(live_col, bg=BG2)
+        live_hdr.pack(fill="x", pady=(0, 6))
+        tk.Frame(live_hdr, bg=GREEN, width=3, height=16).pack(
+            side="left", padx=(0, 6))
+        tk.Label(live_hdr, text="LIVE SESSIONS", fg=GREEN, bg=BG2,
                  font=(FB, 9, "bold")).pack(side="left")
+
+        # Scrollable inner area for live rows
         self.live_frame = tk.Frame(live_col, bg=BG2)
         self.live_frame.pack(fill="x")
 
-        # Vertical divider
-        tk.Frame(cols_frame, bg=BORDER2, width=1).grid(
+        # ── STATIC vertical divider ──────────────────────────────────
+        tk.Frame(body, bg=BORDER2, width=1).grid(
             row=0, column=1, sticky="ns", padx=16)
 
-        # Right: Paused
-        paused_col = tk.Frame(cols_frame, bg=BG2)
-        paused_col.grid(row=0, column=2, sticky="nsew")
-        paused_header = tk.Frame(paused_col, bg=BG2)
-        paused_header.pack(fill="x", pady=(0, 6))
-        tk.Frame(paused_header, bg=AMBER, width=3, height=16).pack(side="left", padx=(0, 6))
-        tk.Label(paused_header, text="PAUSED SESSIONS", fg=AMBER, bg=BG2,
+        # ── RIGHT: Paused Sessions ───────────────────────────────────
+        paused_col = tk.Frame(body, bg=BG2)
+        paused_col.grid(row=0, column=2, sticky="nsew", padx=(0, 0))
+
+        paused_hdr = tk.Frame(paused_col, bg=BG2)
+        paused_hdr.pack(fill="x", pady=(0, 6))
+        tk.Frame(paused_hdr, bg=AMBER, width=3, height=16).pack(
+            side="left", padx=(0, 6))
+        tk.Label(paused_hdr, text="PAUSED SESSIONS", fg=AMBER, bg=BG2,
                  font=(FB, 9, "bold")).pack(side="left")
+
+        # Scrollable inner area for paused rows
         self.paused_frame = tk.Frame(paused_col, bg=BG2)
         self.paused_frame.pack(fill="x")
+
+        # ── Placeholder labels (replaced by _smart_refresh_live) ─────
+        self._live_placeholder = tk.Label(
+            self.live_frame, text="No active sessions.",
+            fg=TEXT3, bg=BG2, font=(FB, 10))
+        self._live_placeholder.pack(anchor="w", pady=4)
+
+        self._paused_placeholder = tk.Label(
+            self.paused_frame, text="No paused sessions.",
+            fg=TEXT3, bg=BG2, font=(FB, 10))
+        self._paused_placeholder.pack(anchor="w", pady=4)
 
         self._live_hash   = None
         self._paused_hash = None
@@ -950,7 +970,8 @@ class AdminDashboard(tk.Frame):
         self.pc_grid.pack(fill="x", padx=20, pady=(0, 20))
         self._fleet_hash = None
 
-    # ── Merge active sessions sharing the same PC ─────────────────────
+    # ── Session merge helper ──────────────────────────────────────────
+
     def _merge_active_by_pc(self, active_sessions):
         grouped = {}
         for s in active_sessions:
@@ -982,23 +1003,25 @@ class AdminDashboard(tk.Frame):
                 merged.append(combined)
         return merged
 
-    # ── FIX 1: Refresh live AND paused separately ─────────────────────
+    # ── Smart refresh: live + paused ─────────────────────────────────
+
     def _smart_refresh_live(self, data):
         sessions  = data.get("sessions", [])
         computers = data.get("computers", [])
 
         active = [s for s in sessions if s["status"] == "active"]
         paused = [s for s in sessions if s["status"] == "paused"]
-
         active = self._merge_active_by_pc(active)
 
-        h_live   = str([(s["computerId"], s.get("duration")) for s in sorted(active, key=lambda x: x["computerId"])])
-        h_paused = str([(s["id"], s.get("pausedRemain")) for s in sorted(paused, key=lambda x: x["id"])])
+        h_live   = str([(s["computerId"], s.get("duration"))
+                        for s in sorted(active, key=lambda x: x["computerId"])])
+        h_paused = str([(s["id"], s.get("pausedRemain"))
+                        for s in sorted(paused, key=lambda x: x["id"])])
 
         live_changed   = h_live   != self._last_hash.get("live")
         paused_changed = h_paused != self._last_hash.get("paused")
 
-        # ── Render active sessions ────────────────────────────────────
+        # ── Rebuild LIVE column ───────────────────────────────────────
         if live_changed:
             self._last_hash["live"] = h_live
             for w in self.live_frame.winfo_children():
@@ -1009,7 +1032,8 @@ class AdminDashboard(tk.Frame):
                 tk.Label(self.live_frame, text="No active sessions.",
                          fg=TEXT3, bg=BG2, font=(FB, 10)).pack(anchor="w", pady=4)
             else:
-                for s in sorted(active, key=lambda x: x.get("_start_ms") or x.get("startTime") or 0):
+                for s in sorted(active,
+                                key=lambda x: x.get("_start_ms") or x.get("startTime") or 0):
                     pc = next((c for c in computers if c["id"] == s["computerId"]), None)
 
                     if "_end_ms" in s:
@@ -1040,11 +1064,11 @@ class AdminDashboard(tk.Frame):
                              fg=TEXT2, bg=BG3, font=(FB, 8)).pack(anchor="w")
 
                     mid_col = tk.Frame(row, bg=BG3)
-                    mid_col.pack(side="left", padx=10, fill="x", expand=True)
+                    mid_col.pack(side="left", padx=12, pady=8)
                     prog = ttk.Progressbar(mid_col, maximum=100, value=pct,
                                            style="Session.Horizontal.TProgressbar",
                                            length=160)
-                    prog.pack(anchor="w", pady=(4, 2))
+                    prog.pack(anchor="w", pady=(2, 2))
                     pct_lbl = tk.Label(mid_col, text=f"{pct:.0f}%",
                                        fg=PURPLE, bg=BG3, font=(FB, 7, "bold"))
                     pct_lbl.pack(anchor="w")
@@ -1065,7 +1089,7 @@ class AdminDashboard(tk.Frame):
                         "pct_lbl":  pct_lbl,
                     }
 
-        # ── Render paused sessions ────────────────────────────────────
+        # ── Rebuild PAUSED column ─────────────────────────────────────
         if paused_changed:
             self._last_hash["paused"] = h_paused
             for w in self.paused_frame.winfo_children():
@@ -1078,7 +1102,11 @@ class AdminDashboard(tk.Frame):
             else:
                 for s in sorted(paused, key=lambda x: x.get("pausedAt") or 0):
                     pc = next((c for c in computers if c["id"] == s["computerId"]), None)
-                    remain_ms = (s.get("pausedRemain") or 0) * 60_000
+
+                    # ── KEY FIX ──────────────────────────────────────────────────
+                    # Customer2.py stores paused_remain in MILLISECONDS.
+                    # _norm_session already reads it as int (no * 1000 needed).
+                    remain_ms = int(s.get("pausedRemain") or 0)
                     total_ms  = s.get("duration", 60) * 60_000
                     pct       = max(0, min(100, remain_ms / total_ms * 100)) if total_ms else 0
                     dur_str   = f"{s.get('duration', '?')} min"
@@ -1097,11 +1125,11 @@ class AdminDashboard(tk.Frame):
                              fg=TEXT2, bg=BG3, font=(FB, 8)).pack(anchor="w")
 
                     mid_col = tk.Frame(row, bg=BG3)
-                    mid_col.pack(side="left", padx=10, fill="x", expand=True)
+                    mid_col.pack(side="left", padx=12, pady=8)
                     prog = ttk.Progressbar(mid_col, maximum=100, value=pct,
                                            style="Paused.Horizontal.TProgressbar",
                                            length=160)
-                    prog.pack(anchor="w", pady=(4, 2))
+                    prog.pack(anchor="w", pady=(2, 2))
                     pct_lbl = tk.Label(mid_col, text=f"{pct:.0f}%",
                                        fg=AMBER, bg=BG3, font=(FB, 7, "bold"))
                     pct_lbl.pack(anchor="w")
@@ -1110,12 +1138,13 @@ class AdminDashboard(tk.Frame):
                     right_col.pack(side="right", padx=10, pady=6)
                     tk.Label(right_col, text="PAUSED", fg=AMBER, bg=BG3,
                              font=(FB, 7, "bold")).pack(anchor="e")
+                    # Display the correct remaining time (already in ms)
                     time_lbl = tk.Label(right_col, text=ms_to_hms(remain_ms),
                                         fg=AMBER, bg=BG3, font=(FM, 14, "bold"))
                     time_lbl.pack(anchor="e")
 
                     self._paused_rows[s["id"]] = {
-                        "remain_ms": remain_ms,
+                        "remain_ms": remain_ms,   # static — does not tick down
                         "time_lbl":  time_lbl,
                         "prog":      prog,
                         "pct_lbl":   pct_lbl,
@@ -1437,13 +1466,15 @@ class AdminDashboard(tk.Frame):
         tf   = tk.Frame(f, bg=BG, highlightthickness=1, highlightbackground=BORDER2)
         tf.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=14)
-        cw = {"Date": 150, "User": 100, "PC": 70, "Duration": 80, "Cost": 90,
-              "Method": 75, "Status": 90, "Receipt": 140}
+        cw = {"Date": 150, "User": 110, "PC": 80, "Duration": 85, "Cost": 100,
+              "Method": 80, "Status": 100, "Receipt": 150}
+        anchors = {"Cost": "e", "Duration": "e"}
         for col in cols:
             self.tree.heading(col, text=col)
-            self.tree.column(col, width=cw.get(col, 100), anchor="w")
-        self.tree.tag_configure("odd",       background=BG3)
-        self.tree.tag_configure("even",      background=BG2)
+            self.tree.column(col, width=cw.get(col, 100),
+                             anchor=anchors.get(col, "w"), minwidth=60)
+        self.tree.tag_configure("odd",       background=BG3,      foreground=TEXT)
+        self.tree.tag_configure("even",      background=BG2,      foreground=TEXT)
         self.tree.tag_configure("cancelled", background="#300010", foreground=RED)
         sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -1555,14 +1586,13 @@ class AdminDashboard(tk.Frame):
             ))
 
     # ════════════════════════════════════════════════════════════════
-    #  USERS TAB  — customers only, no count card
+    #  USERS TAB
     # ════════════════════════════════════════════════════════════════
 
     def _build_users(self):
         outer = tk.Frame(self.tab_content, bg=BG)
         outer.pack(fill="both", expand=True, padx=32, pady=24)
 
-        # ── Create Customer card ───────────────────────────────────
         create_card = tk.Frame(outer, bg=BG2, highlightthickness=1,
                                highlightbackground=BORDER2)
         create_card.pack(fill="x", pady=(0, 20))
@@ -1576,7 +1606,6 @@ class AdminDashboard(tk.Frame):
         form_row = tk.Frame(create_card, bg=BG2)
         form_row.pack(padx=20, pady=(0, 16), fill="x")
 
-        # Username
         self._nu_user = tk.StringVar()
         uf_wrap = tk.Frame(form_row, bg=BG2)
         uf_wrap.pack(side="left", padx=(0, 12))
@@ -1591,7 +1620,6 @@ class AdminDashboard(tk.Frame):
         self._nu_user_entry.bind("<FocusIn>",  lambda _: uf.config(highlightbackground=CYAN))
         self._nu_user_entry.bind("<FocusOut>", lambda _: uf.config(highlightbackground=BORDER2))
 
-        # Password
         self._nu_pass = tk.StringVar()
         pf_wrap = tk.Frame(form_row, bg=BG2)
         pf_wrap.pack(side="left", padx=(0, 12))
@@ -1607,7 +1635,6 @@ class AdminDashboard(tk.Frame):
         self._nu_pass_entry.bind("<FocusIn>",  lambda _: pf.config(highlightbackground=CYAN))
         self._nu_pass_entry.bind("<FocusOut>", lambda _: pf.config(highlightbackground=BORDER2))
 
-        # Confirm
         self._nu_conf = tk.StringVar()
         cf_wrap = tk.Frame(form_row, bg=BG2)
         cf_wrap.pack(side="left", padx=(0, 12))
@@ -1631,18 +1658,17 @@ class AdminDashboard(tk.Frame):
                   command=self._create_user,
                   bg=CYAN, fg=BG, font=(FB, 11, "bold"),
                   relief="flat", cursor="hand2",
-                  activebackground="#00a0bb", activeforeground=BG,
+                  activebackground=CYAN2, activeforeground=BG,
                   padx=16, pady=8).pack(pady=(2, 0))
 
-        self._nu_msg = tk.Label(create_card, text="", fg=GREEN, bg=BG2, font=(FB, 10))
+        self._nu_msg     = tk.Label(create_card, text="", fg=GREEN, bg=BG2, font=(FB, 10))
         self._nu_msg.pack(anchor="w", padx=20, pady=(0, 10))
+        self._nu_msg_job = None
 
-        # ── Search header ──────────────────────────────────────────
         th = tk.Frame(outer, bg=BG)
-        th.pack(fill="x", pady=(0, 8))
+        th.pack(fill="x", pady=(0, 6))
         tk.Label(th, text="Customer Accounts", fg=TEXT, bg=BG,
                  font=(FD, 13, "bold")).pack(side="left")
-
         self._user_search_var = tk.StringVar()
         self._user_search_var.trace("w", lambda *_: self._filter_users())
         sf = tk.Frame(th, bg=BG4, highlightthickness=1, highlightbackground=BORDER2)
@@ -1652,31 +1678,73 @@ class AdminDashboard(tk.Frame):
                  bg=BG4, fg=TEXT, insertbackground=CYAN,
                  font=(FB, 10), relief="flat").pack(padx=8, pady=6, side="left")
 
-        # ── User table ─────────────────────────────────────────────
-        cols = ("Username", "Registered PC", "Created At")
-        tf   = tk.Frame(outer, bg=BG, highlightthickness=1, highlightbackground=BORDER2)
-        tf.pack(fill="both", expand=True)
-        self.user_tree = ttk.Treeview(tf, columns=cols, show="headings", height=14)
-        cw2 = {"Username": 240, "Registered PC": 200, "Created At": 220}
-        for c in cols:
-            self.user_tree.heading(c, text=c,
-                                   command=lambda col=c: self._sort_users(col))
-            self.user_tree.column(c, width=cw2.get(c, 180), anchor="w")
-        self.user_tree.tag_configure("row_even", background=BG2, foreground=TEXT)
-        self.user_tree.tag_configure("row_odd",  background=BG3, foreground=TEXT)
-        sb2 = ttk.Scrollbar(tf, orient="vertical", command=self.user_tree.yview)
-        self.user_tree.configure(yscrollcommand=sb2.set)
-        sb2.pack(side="right", fill="y")
-        self.user_tree.pack(fill="both", expand=True)
-        self.user_tree.bind("<Double-1>", self._on_user_row_dclick)
+        col_hdr = tk.Frame(outer, bg=BG3)
+        col_hdr.pack(fill="x")
+        hsep(col_hdr, BORDER2).pack(fill="x")
+        hdr_inner = tk.Frame(col_hdr, bg=BG3)
+        hdr_inner.pack(fill="x", padx=2)
+        hdr_inner.columnconfigure(0, weight=2, minsize=180)
+        hdr_inner.columnconfigure(1, weight=2, minsize=150)
+        hdr_inner.columnconfigure(2, weight=2, minsize=150)
+        hdr_inner.columnconfigure(3, weight=0, minsize=280)
 
-        tk.Label(outer, text="Double-click a row to manage that account",
-                 fg=TEXT4, bg=BG, font=(FB, 8)).pack(anchor="w", pady=(4, 0))
+        def _hdr_btn(col_idx, text, sort_key):
+            btn = tk.Button(hdr_inner, text=text,
+                            command=lambda k=sort_key: self._sort_users(k),
+                            bg=BG3, fg=TEXT2, font=(FB, 9, "bold"),
+                            relief="flat", cursor="hand2",
+                            activebackground=BG4, activeforeground=TEXT,
+                            anchor="w", padx=10, pady=8)
+            btn.grid(row=0, column=col_idx, sticky="ew")
+
+        _hdr_btn(0, "USERNAME ↕",      "Username")
+        _hdr_btn(1, "REGISTERED PC ↕", "Registered PC")
+        _hdr_btn(2, "CREATED AT ↕",    "Created At")
+        tk.Label(hdr_inner, text="ACTIONS", bg=BG3, fg=TEXT2,
+                 font=(FB, 9, "bold"), anchor="w", padx=10).grid(
+            row=0, column=3, sticky="ew")
+        hsep(col_hdr, BORDER2).pack(fill="x")
+
+        list_outer = tk.Frame(outer, bg=BG, highlightthickness=1,
+                              highlightbackground=BORDER2)
+        list_outer.pack(fill="both", expand=True)
+
+        self._user_canvas = tk.Canvas(list_outer, bg=BG, highlightthickness=0)
+        user_vsb = ttk.Scrollbar(list_outer, orient="vertical",
+                                  command=self._user_canvas.yview)
+        self._user_canvas.configure(yscrollcommand=user_vsb.set)
+        user_vsb.pack(side="right", fill="y")
+        self._user_canvas.pack(fill="both", expand=True)
+
+        self._user_list_frame = tk.Frame(self._user_canvas, bg=BG)
+        self._user_list_wid   = self._user_canvas.create_window(
+            (0, 0), window=self._user_list_frame, anchor="nw")
+        self._user_canvas.bind(
+            "<Configure>",
+            lambda e: self._user_canvas.itemconfig(self._user_list_wid, width=e.width))
+        self._user_list_frame.bind(
+            "<Configure>",
+            lambda e: self._user_canvas.configure(
+                scrollregion=self._user_canvas.bbox("all")))
+
+        def _on_wheel(e):
+            self._user_canvas.yview_scroll(int(-1*(e.delta/120)), "units")
+        self._user_canvas.bind_all("<MouseWheel>", _on_wheel)
 
         self._user_hash         = None
         self._all_users_cache   = []
         self._user_sort_col     = "Username"
         self._user_sort_reverse = False
+        self._reset_open_row    = None
+
+    def _set_nu_msg(self, text, color=GREEN):
+        if self._nu_msg_job:
+            try:
+                self.after_cancel(self._nu_msg_job)
+            except Exception:
+                pass
+        self._nu_msg.config(text=text, fg=color)
+        self._nu_msg_job = self.after(1500, lambda: self._nu_msg.config(text=""))
 
     def _sort_users(self, col):
         if self._user_sort_col == col:
@@ -1691,20 +1759,20 @@ class AdminDashboard(tk.Frame):
         p = self._nu_pass.get().strip()
         c = self._nu_conf.get().strip()
         if not u or not p or not c:
-            self._nu_msg.config(text="⚠  Fill in all fields.", fg=YELLOW)
+            self._set_nu_msg("⚠  Fill in all fields.", YELLOW)
             return
         if len(u) < 3:
-            self._nu_msg.config(text="✗  Username must be at least 3 characters.", fg=RED)
+            self._set_nu_msg("✗  Username must be at least 3 characters.", RED)
             return
         if len(p) < 6:
-            self._nu_msg.config(text="✗  Password must be at least 6 characters.", fg=RED)
+            self._set_nu_msg("✗  Password must be at least 6 characters.", RED)
             return
         if p != c:
-            self._nu_msg.config(text="✗  Passwords do not match.", fg=RED)
+            self._set_nu_msg("✗  Passwords do not match.", RED)
             return
         existing = db_exec("SELECT id FROM users WHERE username=%s", (u,), fetch=True)
         if existing:
-            self._nu_msg.config(text=f"✗  Username '{u}' is already taken.", fg=RED)
+            self._set_nu_msg(f"✗  Username '{u}' is already taken.", RED)
             return
         ts = now_ms()
         db_exec("""
@@ -1714,7 +1782,7 @@ class AdminDashboard(tk.Frame):
         self._nu_user.set("")
         self._nu_pass.set("")
         self._nu_conf.set("")
-        self._nu_msg.config(text=f"✓  Customer account '{u}' created successfully!", fg=GREEN)
+        self._set_nu_msg(f"✓  Customer account '{u}' created successfully!", GREEN)
         self._last_hash.pop("users", None)
 
     def _smart_refresh_users(self, data):
@@ -1727,17 +1795,19 @@ class AdminDashboard(tk.Frame):
         self._filter_users()
 
     def _filter_users(self):
-        q = self._user_search_var.get().strip().lower() if hasattr(self, "_user_search_var") else ""
+        q = (self._user_search_var.get().strip().lower()
+             if hasattr(self, "_user_search_var") else "")
         filtered = self._all_users_cache
         if q:
             filtered = [u for u in filtered
                         if q in str(u.get("username", "")).lower()
                         or q in str(u.get("registered_on_pc", "")).lower()]
-        self._render_user_tree(filtered)
+        self._render_user_list(filtered)
 
-    def _render_user_tree(self, users):
+    def _render_user_list(self, users):
         try:
-            self.user_tree.delete(*self.user_tree.get_children())
+            for w in self._user_list_frame.winfo_children():
+                w.destroy()
         except Exception:
             return
 
@@ -1754,26 +1824,84 @@ class AdminDashboard(tk.Frame):
         except Exception:
             pass
 
-        for i, u in enumerate(users):
-            ts  = u.get("created_at")
-            dt  = (datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d  %H:%M")
-                   if ts else "—")
-            tag = "row_even" if i % 2 == 0 else "row_odd"
-            self.user_tree.insert("", "end",
-                                  iid=f"{u.get('username', '')}_{i}",
-                                  tags=(tag,), values=(
-                u.get("username", "—"),
-                u.get("registered_on_pc") or "—",
-                dt,
-            ))
-
-    def _on_user_row_dclick(self, event):
-        sel = self.user_tree.selection()
-        if not sel:
+        if not users:
+            tk.Label(self._user_list_frame, text="No customers found.",
+                     fg=TEXT3, bg=BG, font=(FB, 10)).pack(anchor="w", padx=16, pady=12)
             return
-        username = self.user_tree.item(sel[0])["values"][0]
-        UserManageDialog(self, username,
-                         on_done=lambda: self._last_hash.pop("users", None))
+
+        self._user_list_frame.columnconfigure(0, weight=2, minsize=180)
+        self._user_list_frame.columnconfigure(1, weight=2, minsize=150)
+        self._user_list_frame.columnconfigure(2, weight=2, minsize=150)
+        self._user_list_frame.columnconfigure(3, weight=0, minsize=280)
+
+        self._reset_vars = {}
+
+        for i, u in enumerate(users):
+            ts    = u.get("created_at")
+            dt    = (datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d  %H:%M")
+                     if ts else "—")
+            bg    = BG3 if i % 2 else BG2
+            uname = u.get("username", "—")
+
+            tk.Label(self._user_list_frame, text=uname,
+                     fg=TEXT, bg=bg, font=(FB, 10, "bold"), anchor="w",
+                     padx=10, pady=10).grid(row=i*2, column=0, sticky="ew")
+
+            tk.Label(self._user_list_frame,
+                     text=u.get("registered_on_pc") or "—",
+                     fg=TEXT2, bg=bg, font=(FB, 10), anchor="w",
+                     padx=10, pady=10).grid(row=i*2, column=1, sticky="ew")
+
+            tk.Label(self._user_list_frame, text=dt,
+                     fg=TEXT2, bg=bg, font=(FB, 10), anchor="w",
+                     padx=10, pady=10).grid(row=i*2, column=2, sticky="ew")
+
+            actions_cell = tk.Frame(self._user_list_frame, bg=bg)
+            actions_cell.grid(row=i*2, column=3, sticky="nsew", padx=8, pady=0)
+
+            self._build_action_default(actions_cell, uname, bg)
+
+            sep = tk.Frame(self._user_list_frame, bg=BORDER, height=1)
+            sep.grid(row=i*2+1, column=0, columnspan=4, sticky="ew")
+
+    def _build_action_default(self, cell, uname, bg):
+        for w in cell.winfo_children():
+            w.destroy()
+
+        inner = tk.Frame(cell, bg=bg)
+        inner.pack(anchor="center", expand=True)
+
+        tk.Button(
+            inner, text="🔑  Reset PW",
+            command=lambda: ResetPasswordDialog(self, uname),
+            bg=CYAN_DIM, fg=CYAN, font=(FB, 9, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=CYAN, activeforeground=BG,
+            highlightthickness=1, highlightbackground=CYAN,
+            padx=10, pady=6
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            inner, text="🗑  Delete",
+            command=lambda un=uname: self._inline_delete_user(un),
+            bg=RED_DIM, fg=RED, font=(FB, 9, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=RED, activeforeground=TEXT,
+            highlightthickness=1, highlightbackground=RED,
+            padx=10, pady=6
+        ).pack(side="left")
+
+    def _inline_delete_user(self, username):
+        ConfirmDialog(
+            self,
+            title="Delete Account",
+            message=f'Permanently delete "{username}"?',
+            on_confirm=lambda: self._do_inline_delete(username)
+        )
+
+    def _do_inline_delete(self, username):
+        db_exec("DELETE FROM users WHERE username=%s", (username,))
+        self._last_hash.pop("users", None)
 
     # ════════════════════════════════════════════════════════════════
     #  FLEET ACTIONS
@@ -1817,7 +1945,7 @@ class AdminDashboard(tk.Frame):
         self._last_hash.pop("fleet", None)
 
     # ════════════════════════════════════════════════════════════════
-    #  CSV EXPORT  — FIX 2: auto-dismiss popup after 1500 ms
+    #  CSV EXPORT
     # ════════════════════════════════════════════════════════════════
 
     def _export_csv(self):
@@ -1851,7 +1979,6 @@ class AdminDashboard(tk.Frame):
                         s["status"],
                         pay.get("receipt_no", "") if pay else "",
                     ])
-            # auto_dismiss_ms=1500 makes the popup disappear after 1.5 seconds
             ThemedDialog(self, kind="success", title="Export Successful",
                          message=f"{len(relevant)} session(s) exported.",
                          detail=os.path.abspath(filename),
@@ -1860,8 +1987,118 @@ class AdminDashboard(tk.Frame):
             ThemedDialog(self, kind="error", title="Export Failed",
                          message="Could not write the CSV file.", detail=str(e))
 
+
 # ════════════════════════════════════════════════════════════════════
-#  USER MANAGE DIALOG
+#  RESET PASSWORD DIALOG
+# ════════════════════════════════════════════════════════════════════
+
+class ResetPasswordDialog(tk.Toplevel):
+    def __init__(self, parent, username, on_done=None):
+        super().__init__(parent)
+        self.username = username
+        self.on_done  = on_done
+        self.configure(bg=BG2)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.grab_set()
+        self.bind("<Escape>", lambda _: self._close())
+        self._build()
+        self.update_idletasks()
+        w  = 460
+        h  = max(self.winfo_reqheight() + 60, 360)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        self.update_idletasks()
+        add_gradient_border(self, thickness=3, c1=CYAN, c2=PURPLE)
+
+    def _build(self):
+        outer = tk.Frame(self, bg=BG2)
+        outer.pack(fill="both", expand=True, padx=3, pady=3)
+        make_gradient_canvas_h(outer, height=3, c1=CYAN, c2=PURPLE).pack(fill="x")
+        tk.Label(outer, text="🔑  Reset Password", bg=BG2, fg=TEXT,
+                 font=(FD, 14, "bold")).pack(pady=(20, 2))
+        tk.Label(outer, text=self.username, bg=BG2, fg=CYAN,
+                 font=(FM, 12, "bold")).pack(pady=(0, 10))
+        hsep(outer, BORDER2).pack(fill="x", padx=24, pady=(0, 16))
+        self._new_pw = tk.StringVar()
+        lf1 = tk.Frame(outer, bg=BG2)
+        lf1.pack(padx=28, fill="x", pady=(0, 10))
+        tk.Label(lf1, text="NEW PASSWORD", fg=TEXT3, bg=BG2,
+                 font=(FB, 7, "bold")).pack(anchor="w")
+        ef1 = tk.Frame(lf1, bg=BG4, highlightthickness=1, highlightbackground=BORDER2)
+        ef1.pack(fill="x", pady=(3, 0))
+        self._new_pw_entry = tk.Entry(ef1, textvariable=self._new_pw, show="●",
+                                      bg=BG4, fg=TEXT, insertbackground=CYAN,
+                                      font=(FB, 12), relief="flat")
+        self._new_pw_entry.pack(padx=12, pady=9, fill="x")
+        self._new_pw_entry.bind("<FocusIn>",
+                                lambda _: ef1.config(highlightbackground=CYAN))
+        self._new_pw_entry.bind("<FocusOut>",
+                                lambda _: ef1.config(highlightbackground=BORDER2))
+        self._new_pw_entry.focus_set()
+        self._conf_pw = tk.StringVar()
+        lf2 = tk.Frame(outer, bg=BG2)
+        lf2.pack(padx=28, fill="x", pady=(0, 6))
+        tk.Label(lf2, text="CONFIRM PASSWORD", fg=TEXT3, bg=BG2,
+                 font=(FB, 7, "bold")).pack(anchor="w")
+        ef2 = tk.Frame(lf2, bg=BG4, highlightthickness=1, highlightbackground=BORDER2)
+        ef2.pack(fill="x", pady=(3, 0))
+        self._conf_pw_entry = tk.Entry(ef2, textvariable=self._conf_pw, show="●",
+                                       bg=BG4, fg=TEXT, insertbackground=CYAN,
+                                       font=(FB, 12), relief="flat")
+        self._conf_pw_entry.pack(padx=12, pady=9, fill="x")
+        self._conf_pw_entry.bind("<FocusIn>",
+                                 lambda _: ef2.config(highlightbackground=CYAN))
+        self._conf_pw_entry.bind("<FocusOut>",
+                                 lambda _: ef2.config(highlightbackground=BORDER2))
+        self._conf_pw_entry.bind("<Return>", lambda _: self._save())
+        self._msg = tk.Label(outer, text="", fg=GREEN, bg=BG2,
+                             font=(FB, 9), anchor="w")
+        self._msg.pack(padx=28, fill="x", pady=(4, 0))
+        hsep(outer, BORDER2).pack(fill="x", padx=24, pady=(14, 0))
+        btn_row = tk.Frame(outer, bg=BG2)
+        btn_row.pack(padx=28, pady=(14, 24), fill="x")
+        tk.Button(btn_row, text="Cancel", command=self._close,
+                  bg=BG4, fg=TEXT2, font=(FB, 11, "bold"),
+                  relief="flat", cursor="hand2",
+                  activebackground=BG5, activeforeground=TEXT,
+                  padx=16, pady=12).pack(side="left", expand=True, fill="x", padx=(0, 8))
+        tk.Button(btn_row, text="Save Password", command=self._save,
+                  bg=CYAN, fg=BG, font=(FB, 11, "bold"),
+                  relief="flat", cursor="hand2",
+                  activebackground=CYAN2, activeforeground=BG,
+                  padx=16, pady=12).pack(side="left", expand=True, fill="x")
+
+    def _save(self):
+        pw   = self._new_pw.get().strip()
+        conf = self._conf_pw.get().strip()
+        if not pw:
+            self._msg.config(text="✗  Please enter a new password.", fg=RED)
+            return
+        if len(pw) < 6:
+            self._msg.config(text="✗  Minimum 6 characters required.", fg=RED)
+            return
+        if pw != conf:
+            self._msg.config(text="✗  Passwords do not match.", fg=RED)
+            return
+        db_exec("UPDATE users SET password=%s WHERE username=%s",
+                (pw, self.username))
+        self._msg.config(text="✓  Password updated successfully.", fg=GREEN)
+        self.after(900, self._close)
+
+    def _close(self):
+        try:
+            self.grab_release()
+            self.destroy()
+        except Exception:
+            pass
+        if self.on_done:
+            self.on_done()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  USER MANAGE DIALOG  (kept for backward-compat)
 # ════════════════════════════════════════════════════════════════════
 
 class UserManageDialog(tk.Toplevel):
@@ -1889,22 +2126,17 @@ class UserManageDialog(tk.Toplevel):
     def _build(self):
         inner = tk.Frame(self, bg=BG2)
         inner.place(x=3, y=3, relwidth=1, relheight=1, width=-6, height=-6)
-
         make_gradient_canvas_h(inner, height=3, c1=CYAN, c2=PURPLE).pack(fill="x")
-
         tk.Label(inner, text="👤  Manage Customer", bg=BG2, fg=TEXT,
                  font=(FD, 15, "bold")).pack(pady=(20, 2))
         tk.Label(inner, text=self.username, bg=BG2, fg=CYAN,
                  font=(FM, 13, "bold")).pack(pady=(0, 4))
-
         role_badge = tk.Frame(inner, bg=CYAN_DIM, highlightthickness=1,
                               highlightbackground=CYAN)
         role_badge.pack(pady=(0, 12))
         tk.Label(role_badge, text="  CUSTOMER  ", bg=CYAN_DIM,
                  fg=CYAN, font=(FB, 8, "bold")).pack(padx=4, pady=4)
-
         hsep(inner).pack(fill="x", padx=24, pady=(0, 16))
-
         pf_card = tk.Frame(inner, bg=BG3, highlightthickness=1,
                            highlightbackground=BORDER2)
         pf_card.pack(padx=28, fill="x", pady=(0, 14))
@@ -1925,9 +2157,8 @@ class UserManageDialog(tk.Toplevel):
         self._pw_msg.pack(anchor="w", padx=14)
         tk.Button(pf_card, text="Reset Password", command=self._reset_pw,
                   bg=CYAN, fg=BG, font=(FB, 10, "bold"), relief="flat",
-                  cursor="hand2", activebackground="#00a0bb", activeforeground=BG,
+                  cursor="hand2", activebackground=CYAN2, activeforeground=BG,
                   padx=14, pady=8).pack(anchor="w", padx=14, pady=(6, 14))
-
         hsep(inner, BORDER).pack(fill="x", padx=24, pady=(0, 14))
         row = tk.Frame(inner, bg=BG2)
         row.pack(padx=28, pady=(0, 24), fill="x")
@@ -1968,6 +2199,7 @@ class UserManageDialog(tk.Toplevel):
             self.destroy()
         except Exception:
             pass
+
 
 # ════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
