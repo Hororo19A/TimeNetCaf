@@ -19,8 +19,13 @@ Requires: pip install mysql-connector-python requests pystray pillow
     4. Replace RECAPTCHA_SECRET_KEY below with your Secret Key.
     5. The reCAPTCHA page is served via a local HTTP server on
        127.0.0.1 (not file://) so Google's JS loads correctly.
-    6. The browser opens in --kiosk (fullscreen) mode, identical
-       to the PayMongo payment screen.
+    6. The browser opens in --kiosk (fullscreen) mode.
+
+  MINIMIZE FIX:
+    A hidden "proxy" Toplevel window registers the app in the
+    Windows taskbar (overrideredirect windows cannot do this).
+    Clicking — minimizes the proxy → hides the float.
+    Clicking the TN taskbar icon restores both.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -231,43 +236,43 @@ def find_browser():
                 return f
     return None
 
+
+def make_timenet_icon_image():
+    """Returns a PIL Image for the TN icon, or None if PIL is unavailable."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        size = 64
+        img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([0, 0, size - 1, size - 1], fill=(12, 19, 32, 255))
+        draw.ellipse([2, 2, size - 3, size - 3],
+                     outline=(168, 85, 247, 200), width=2)
+        mx, my, mw, mh = 10, 14, 44, 26
+        draw.rounded_rectangle([mx, my, mx + mw, my + mh],
+                                radius=4, fill=(23, 34, 55, 255),
+                                outline=(168, 85, 247, 255), width=1)
+        draw.rounded_rectangle([mx + 3, my + 3, mx + mw - 3, my + mh - 3],
+                                radius=2, fill=(0, 45, 56, 255))
+        for yi in range(my + 6, my + mh - 3, 4):
+            draw.line([(mx + 5, yi), (mx + mw - 5, yi)],
+                      fill=(0, 200, 232, 120), width=1)
+        draw.rectangle([29, 40, 35, 46], fill=(23, 34, 55, 255))
+        draw.rectangle([22, 46, 42, 49], fill=(23, 34, 55, 255))
+        try:
+            font = ImageFont.truetype("segoeui.ttf", 9)
+        except Exception:
+            font = ImageFont.load_default()
+        draw.text((32, 51), "TN", fill=(168, 85, 247, 220),
+                  font=font, anchor="mm")
+        return img
+    except Exception:
+        return None
+
 # ════════════════════════════════════════════════════════════════════
-#  TRAY ICON
+#  TRAY ICON  (optional — only used before session starts)
 # ════════════════════════════════════════════════════════════════════
 
 _tray_icon = None
-
-
-def _make_tray_image():
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError:
-        return None
-
-    size  = 64
-    img   = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw  = ImageDraw.Draw(img)
-    draw.ellipse([0, 0, size - 1, size - 1], fill=(12, 19, 32, 255))
-    draw.ellipse([2, 2, size - 3, size - 3],
-                 outline=(168, 85, 247, 200), width=2)
-    mx, my, mw, mh = 10, 14, 44, 26
-    draw.rounded_rectangle([mx, my, mx + mw, my + mh],
-                            radius=4, fill=(23, 34, 55, 255),
-                            outline=(168, 85, 247, 255), width=1)
-    draw.rounded_rectangle([mx + 3, my + 3, mx + mw - 3, my + mh - 3],
-                            radius=2, fill=(0, 45, 56, 255))
-    for yi in range(my + 6, my + mh - 3, 4):
-        draw.line([(mx + 5, yi), (mx + mw - 5, yi)],
-                  fill=(0, 200, 232, 120), width=1)
-    draw.rectangle([29, 40, 35, 46], fill=(23, 34, 55, 255))
-    draw.rectangle([22, 46, 42, 49], fill=(23, 34, 55, 255))
-    try:
-        font = ImageFont.truetype("segoeui.ttf", 9)
-    except Exception:
-        font = ImageFont.load_default()
-    draw.text((32, 51), "TN", fill=(168, 85, 247, 220),
-              font=font, anchor="mm")
-    return img
 
 
 def start_tray(on_restore):
@@ -275,11 +280,9 @@ def start_tray(on_restore):
     try:
         import pystray
     except ImportError:
-        print("[Tray] pystray not installed — taskbar icon disabled.")
         return
-    img = _make_tray_image()
+    img = make_timenet_icon_image()
     if img is None:
-        print("[Tray] Pillow not installed — taskbar icon disabled.")
         return
 
     def _restore(icon, item):
@@ -762,12 +765,6 @@ class CashVoucherDialog(tk.Toplevel):
 
 # ════════════════════════════════════════════════════════════════════
 #  PAYMENT WAITING SCREEN  (GCash / Maya)
-#
-#  FIX: The main app window is hidden (withdraw) so the browser gets
-#  full screen. A slim top-bar Toplevel floats above the browser with
-#  the payment status, amount, and a Cancel button — identical to how
-#  RecaptchaWaitingScreen works. When no browser is found, a fullscreen
-#  overlay is shown instead (with the payment URL to copy/scan).
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -794,15 +791,12 @@ class PaymentWaitingScreen:
         self._start_watcher()
 
         if self._browser_path:
-            # Hide main app, launch browser fullscreen, float the top bar
-            self.app.withdraw()
             self._launch_browser()
             self._build_top_bar()
         else:
-            # No browser — show a fullscreen overlay with the payment URL
             self._build_overlay()
 
-    # ── browser ───────────────────────────────────────────────────────
+        self._animate()
 
     def _launch_browser(self):
         self._tmp_dir = tempfile.mkdtemp(prefix="timenet_pay_")
@@ -817,11 +811,9 @@ class PaymentWaitingScreen:
         except Exception as e:
             print(f"[Browser] {e}")
             self._browser = None
-            # Restore app and show fallback overlay
             self.app.after(0, self._fallback_no_browser)
 
     def _fallback_no_browser(self):
-        self.app.deiconify()
         self._destroy_top_bar()
         self._build_overlay()
 
@@ -839,8 +831,6 @@ class PaymentWaitingScreen:
         if self._tmp_dir:
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
             self._tmp_dir = None
-
-    # ── top bar (shown above the kiosk browser) ───────────────────────
 
     def _build_top_bar(self):
         sw     = self.app.winfo_screenwidth()
@@ -861,7 +851,6 @@ class PaymentWaitingScreen:
         inner = tk.Frame(bar, bg=BG2)
         inner.pack(fill="both", expand=True, padx=20)
 
-        # Left — icon + method name + amount
         left = tk.Frame(inner, bg=BG2)
         left.pack(side="left", fill="y")
         tk.Label(left, text=icon, bg=BG2, fg=color,
@@ -873,7 +862,6 @@ class PaymentWaitingScreen:
         tk.Label(ic, text=fmt_currency(self.amount), bg=BG2, fg=TEXT,
                  font=(FD, 11)).pack(anchor="w")
 
-        # Centre — status + dots
         self._status_lbl = tk.Label(inner, text="⏳  Waiting for payment…",
                                     bg=BG2, fg=YELLOW, font=(FB, 11, "bold"))
         self._status_lbl.pack(side="left", padx=40)
@@ -881,7 +869,6 @@ class PaymentWaitingScreen:
                                  font=(FB, 10))
         self._dot_lbl.pack(side="left")
 
-        # Right — cancel button
         tk.Button(inner, text="✕  Cancel Payment", command=self._cancel,
                   bg=RED_DIM, fg=RED, font=(FB, 11, "bold"),
                   relief="flat", cursor="hand2", padx=20, pady=8,
@@ -891,10 +878,6 @@ class PaymentWaitingScreen:
 
         bot = make_gradient_canvas_h(bar, height=2, c1=CYAN, c2=PURPLE)
         bot.pack(fill="x", side="bottom")
-
-        self._animate()
-
-    # ── no-browser fallback overlay ───────────────────────────────────
 
     def _build_overlay(self):
         sw, sh = self.app.winfo_screenwidth(), self.app.winfo_screenheight()
@@ -909,7 +892,6 @@ class PaymentWaitingScreen:
         ov.protocol("WM_DELETE_WINDOW", lambda: None)
         self._overlay = ov
 
-        # Header bar
         bar = tk.Frame(ov, bg=BG2, height=70)
         bar.pack(fill="x")
         bar.pack_propagate(False)
@@ -963,9 +945,6 @@ class PaymentWaitingScreen:
                                  text="Checking payment status  ●○○",
                                  bg=BG, fg=TEXT3, font=(FB, 10))
         self._dot_lbl.pack(pady=(10, 0))
-        self._animate()
-
-    # ── animation ─────────────────────────────────────────────────────
 
     def _animate(self):
         if self._done:
@@ -978,26 +957,20 @@ class PaymentWaitingScreen:
             return
         self.app.after(600, self._animate)
 
-    # ── watcher thread ────────────────────────────────────────────────
-
     def _start_watcher(self):
         def _w():
             while not self._done:
                 time.sleep(0.05)
-                # Payment confirmed by poller
                 if self.link_id not in paymongo.pending:
                     if not self._done:
                         self.app.after(0, self._on_confirmed)
                     return
-                # Browser closed by user without paying (treat as cancel)
                 proc = self._browser
                 if proc and proc.poll() is not None:
                     if not self._done and self.link_id in paymongo.pending:
                         self.app.after(0, self._cancel)
                     return
         threading.Thread(target=_w, daemon=True).start()
-
-    # ── outcome handlers ──────────────────────────────────────────────
 
     def _on_confirmed(self):
         if self._done:
@@ -1013,8 +986,6 @@ class PaymentWaitingScreen:
 
     def _finish_paid(self):
         self._destroy_all()
-        # Restore main app before handing off
-        self.app.deiconify()
         if self.on_paid:
             self.on_paid()
 
@@ -1025,8 +996,6 @@ class PaymentWaitingScreen:
         paymongo.pending.pop(self.link_id, None)
         threading.Thread(target=self._kill_browser, daemon=True).start()
         self._destroy_all()
-        # Restore main app before handing off
-        self.app.deiconify()
         if self.on_cancel:
             self.on_cancel()
 
@@ -1180,15 +1149,19 @@ class Auth:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("TimeNet Cafe — Customer")
+        self.title("TimeNet Cafe")
         self.configure(bg=BG)
         self._locked              = True
         self._hook_running        = False
         self._taskbar_enforce_on  = False
         self._registered_hk_ids   = []
         self._tray_active         = False
+        # Session-mode windows
+        self._session_win         = None   # borderless floating timer
+        self._taskbar_proxy       = None   # hidden proxy that owns the taskbar slot
         self._apply_lock()
         self._setup_ttk()
+        self._set_timenet_icon()
         self.container     = tk.Frame(self, bg=BG)
         self.container.pack(fill="both", expand=True)
         self.current_frame = None
@@ -1197,12 +1170,34 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", lambda: None)
         paymongo.on_success = self._on_payment_success
 
+    # ── Icon ─────────────────────────────────────────────────────────
+
+    def _set_timenet_icon(self, target=None):
+        """Apply the TN icon to `target` (default: self)."""
+        win = target or self
+        try:
+            from PIL import ImageTk
+            img   = make_timenet_icon_image()
+            photo = ImageTk.PhotoImage(img)
+            win.iconphoto(True, photo)
+            # Keep a reference so it isn't garbage-collected
+            if win is self:
+                self._icon_photo = photo
+            else:
+                win._icon_photo = photo
+        except Exception as e:
+            print(f"[Icon] {e}")
+
+    # ── Payment success callback ──────────────────────────────────────
+
     def _on_payment_success(self, info):
         self.after(300, self._handle_pay_success, info)
 
     def _handle_pay_success(self, info):
         if isinstance(self.current_frame, CustomerDashboard):
             self.current_frame._force_load_session()
+
+    # ── Taskbar helper ────────────────────────────────────────────────
 
     @staticmethod
     def _set_taskbar(visible):
@@ -1217,6 +1212,8 @@ class App(tk.Tk):
                     user32.ShowWindow(hw, 5 if visible else 0)
         except Exception:
             pass
+
+    # ── Kiosk lock ────────────────────────────────────────────────────
 
     def _apply_lock(self):
         self._locked = True
@@ -1235,48 +1232,132 @@ class App(tk.Tk):
         self.attributes("-topmost", True)
         self.after(500, lambda: self.attributes("-topmost", False))
 
+    # ── Unlock for session — proxy + float approach ───────────────────
+
     def unlock_for_session(self):
+        """
+        Switch to session mode.
+
+        Strategy (fixes the minimize / taskbar problem):
+          1. The main Tk window is withdrawn (hidden).
+          2. A tiny off-screen Toplevel ("proxy") is created WITHOUT
+             overrideredirect so Windows registers it in the taskbar.
+             It carries the TN icon and the window title.
+          3. A borderless floating Toplevel ("session_win") shows the
+             actual timer widget in the corner of the screen.
+          4. <Unmap> on the proxy (user clicked — minimize) → hides the float.
+             <Map>   on the proxy (user clicked TN in taskbar) → shows the float.
+          5. On relock, both proxy and float are destroyed and the main
+             window is restored.
+        """
         self._locked             = False
         self._taskbar_enforce_on = False
+        self._stop_hotkeys()
+
+        # ── Step 1: hide main kiosk window ───────────────────────────
         self.overrideredirect(False)
         self.update_idletasks()
-        self.resizable(True, True)
-        w, h = 300, 170
+        self.withdraw()
+
+        # ── Step 2: proxy window (taskbar entry) ─────────────────────
+        proxy = tk.Toplevel(self)
+        proxy.title("TimeNet Cafe — Session Timer")
+        proxy.configure(bg=BG)
+        proxy.geometry("1x1+-32000+-32000")   # off-screen, invisible
+        proxy.resizable(False, False)
+        proxy.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._set_timenet_icon(proxy)
+        proxy.update_idletasks()
+        self._taskbar_proxy = proxy
+
+        # ── Step 3: floating borderless timer widget ──────────────────
+        w, h = 300, 210
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{w}x{h}+{sw - w - 12}+{sh - h - 48}")
-        self.update_idletasks()
-        self.overrideredirect(True)
-        self.resizable(False, False)
-        self.attributes("-topmost", True)
-        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        win = tk.Toplevel(self)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        win.configure(bg=BG2)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+        win.geometry(f"{w}x{h}+{sw - w - 12}+{sh - h - 48}")
+        win.update_idletasks()
+        self._session_win = win
+
+        # ── Step 4: wire proxy ↔ float ────────────────────────────────
+        proxy.bind("<Unmap>", lambda e: self._on_proxy_unmap())
+        proxy.bind("<Map>",   lambda e: self._on_proxy_map())
+
+        # ── Step 5: render timer into the float ──────────────────────
         self._set_taskbar(True)
-        if not self._tray_active:
-            self._tray_active = True
-            start_tray(self._restore_from_tray)
+        if isinstance(self.current_frame, CustomerDashboard):
+            self.current_frame._render_session_into(win)
+
+    def _on_proxy_unmap(self):
+        """Proxy was iconified → hide the floating timer."""
+        try:
+            if self._session_win:
+                self._session_win.withdraw()
+        except Exception:
+            pass
+
+    def _on_proxy_map(self):
+        """Proxy was restored from taskbar → show and raise the floating timer."""
+        try:
+            if self._session_win:
+                self._session_win.deiconify()
+                self._session_win.lift()
+                self._session_win.attributes("-topmost", True)
+        except Exception:
+            pass
+
+    # ── Relock (end session or logout) ───────────────────────────────
+
+    def relock(self):
+        self._taskbar_enforce_on = False
+        self.attributes("-topmost", False)
+
+        # Tear down session windows
+        for attr in ("_session_win", "_taskbar_proxy"):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+        if self._tray_active:
+            self._tray_active = False
+            stop_tray()
+
+        # Restore main window
+        self.deiconify()
+        self.overrideredirect(False)
+        self.resizable(True, True)
+        self.update_idletasks()
+        self._apply_lock()
+
+    # ── Restore from tray ────────────────────────────────────────────
 
     def _restore_from_tray(self):
         self.after(0, self._do_restore)
 
     def _do_restore(self):
         try:
-            self.deiconify()
-            self.lift()
-            self.focus_force()
-            self.attributes("-topmost", True)
-            self.after(400, lambda: self.attributes("-topmost", True))
+            if self._session_win:
+                self._session_win.deiconify()
+                self._session_win.lift()
+                self._session_win.attributes("-topmost", True)
+            else:
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self.attributes("-topmost", True)
+                self.after(400, lambda: self.attributes("-topmost", True))
         except Exception:
             pass
 
-    def relock(self):
-        self._taskbar_enforce_on = False
-        self.attributes("-topmost", False)
-        self.overrideredirect(False)
-        self.resizable(True, True)
-        self.update_idletasks()
-        if self._tray_active:
-            self._tray_active = False
-            stop_tray()
-        self._apply_lock()
+    # ── Hotkey blocking (kiosk mode) ─────────────────────────────────
 
     def _start_hotkeys(self):
         if platform.system() != "Windows" or self._hook_running:
@@ -1407,13 +1488,25 @@ class App(tk.Tk):
         user32.UnhookWindowsHookEx(hook)
         self._hook_running = False
 
+    # ── Admin exit ───────────────────────────────────────────────────
+
     def _admin_exit(self):
         def _do():
             self._stop_hotkeys()
             self._set_taskbar(True)
             stop_tray()
+            # Destroy any session windows before quitting
+            for attr in ("_session_win", "_taskbar_proxy"):
+                w = getattr(self, attr, None)
+                if w:
+                    try:
+                        w.destroy()
+                    except Exception:
+                        pass
             self.destroy()
         AdminPinDialog(self, on_success=_do)
+
+    # ── ttk style ────────────────────────────────────────────────────
 
     def _setup_ttk(self):
         s = ttk.Style(self)
@@ -1434,6 +1527,8 @@ class App(tk.Tk):
         s.configure("Session.Horizontal.TProgressbar",
                     troughcolor=BG3, background=PURPLE,
                     thickness=8, bordercolor=BG3)
+
+    # ── Frame switching ──────────────────────────────────────────────
 
     def switch_frame(self, cls, *a, **kw):
         if self.current_frame:
@@ -1479,8 +1574,7 @@ class LoginPage(tk.Frame):
         card = tk.Frame(card_border, bg=BG2)
         card.pack(padx=1, pady=1)
 
-        gc = make_gradient_canvas_h(card, height=4, c1=PURPLE, c2=CYAN)
-        gc.pack(fill="x")
+        make_gradient_canvas_h(card, height=4, c1=PURPLE, c2=CYAN).pack(fill="x")
 
         tk.Label(card, text="🖥", bg=BG2, fg=PURPLE,
                  font=(FD, 36)).pack(pady=(30, 0))
@@ -2171,6 +2265,259 @@ class RegisterPage(tk.Frame):
         threading.Thread(target=_finish, daemon=True).start()
 
 # ════════════════════════════════════════════════════════════════════
+#  ADD TIME DIALOG
+# ════════════════════════════════════════════════════════════════════
+
+
+class AddTimeDialog(tk.Toplevel):
+    def __init__(self, app, session, computer, on_complete):
+        super().__init__(app)
+        self.app         = app
+        self.session     = session
+        self.computer    = computer
+        self.on_complete = on_complete
+        self.selected    = None
+        self.method      = tk.StringVar(value="cash")
+        self.configure(bg=BG2)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._build()
+        self.update_idletasks()
+        w  = 560
+        h  = max(self.winfo_reqheight() + 60, 780)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        self.update_idletasks()
+        add_gradient_border(self, thickness=3, c1=CYAN, c2=PURPLE)
+
+    def _build(self):
+        inner = tk.Frame(self, bg=BG2)
+        inner.place(x=3, y=3, relwidth=1, relheight=1, width=-6, height=-6)
+
+        tk.Label(inner, text="⏱  Add More Time", bg=BG2, fg=TEXT,
+                 font=(FD, 16, "bold")).pack(pady=(22, 2))
+        tk.Label(inner, text="Select how much time to add to your session",
+                 bg=BG2, fg=TEXT2, font=(FB, 10)).pack(pady=(0, 16))
+        hsep(inner).pack(fill="x", padx=24)
+
+        sc = tk.Frame(inner, bg=BG3, highlightthickness=1,
+                      highlightbackground=BORDER2)
+        sc.pack(padx=28, pady=16, fill="x")
+        tk.Label(sc, text="CURRENT SESSION", fg=TEXT3, bg=BG3,
+                 font=(FB, 8, "bold")).pack(anchor="w", padx=16, pady=(12, 6))
+        r = tk.Frame(sc, bg=BG3)
+        r.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(r, text="Computer", fg=TEXT3, bg=BG3,
+                 font=(FB, 10)).pack(side="left")
+        tk.Label(r, text=self.computer.get("name", "—"), fg=TEXT2, bg=BG3,
+                 font=(FB, 10)).pack(side="right")
+        tk.Frame(sc, bg=BG3, height=2).pack()
+
+        hsep(inner).pack(fill="x", padx=24)
+        tk.Label(inner, text="ADD DURATION", fg=TEXT3, bg=BG2,
+                 font=(FB, 8, "bold")).pack(pady=(14, 10))
+
+        grid = tk.Frame(inner, bg=BG2)
+        grid.pack(padx=28, pady=(0, 8))
+        self.tier_btns = {}
+        for idx, tier in enumerate(PRICING_TIERS):
+            cost   = calc_cost(tier["minutes"])
+            rn, cn = divmod(idx, 4)
+            f = tk.Frame(grid, bg=BG3, cursor="hand2",
+                         width=118, height=72, highlightthickness=1,
+                         highlightbackground=BORDER)
+            f.grid(row=rn, column=cn, padx=4, pady=4, sticky="nsew")
+            f.pack_propagate(False)
+            grid.columnconfigure(cn, weight=1)
+            l1 = tk.Label(f, text=tier["label"], bg=BG3, fg=TEXT2,
+                          font=(FB, 8))
+            l1.pack(pady=(12, 2))
+            l2 = tk.Label(f, text=fmt_currency(cost), bg=BG3, fg=GREEN,
+                          font=(FD, 11, "bold"))
+            l2.pack(pady=(0, 12))
+            mins = tier["minutes"]
+            for w in (f, l1, l2):
+                w.bind("<Button-1>", lambda e, m=mins: self._pick(m))
+            self.tier_btns[mins] = (f, l1, l2)
+
+        self.summary_lbl = tk.Label(inner, text="", fg=CYAN, bg=BG2,
+                                    font=(FB, 10), justify="center")
+        self.summary_lbl.pack(pady=(4, 0))
+
+        hsep(inner).pack(fill="x", padx=24, pady=(10, 0))
+        tk.Label(inner, text="PAYMENT METHOD", fg=TEXT3, bg=BG2,
+                 font=(FB, 8, "bold")).pack(pady=(12, 8))
+
+        METHODS = [
+            ("cash",  "💵", "Cash",  GREEN),
+            ("gcash", "📱", "GCash", "#00B4D8"),
+            ("maya",  "💜", "Maya",  PURPLE),
+        ]
+        self._m_widgets = {}
+        mf = tk.Frame(inner, bg=BG2)
+        mf.pack(padx=28, fill="x")
+        for ci, (val, icon, lbl_txt, color) in enumerate(METHODS):
+            mf.columnconfigure(ci, weight=1)
+            is_sel     = self.method.get() == val
+            outer_card = tk.Frame(mf, bg=color if is_sel else BORDER,
+                                  cursor="hand2")
+            outer_card.grid(row=0, column=ci, padx=4, pady=4, sticky="nsew")
+            inner_card = tk.Frame(outer_card, bg=BG4 if is_sel else BG3)
+            inner_card.pack(fill="both", expand=True, padx=2, pady=2)
+            il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                          fg=color, font=(FD, 18))
+            il.pack(pady=(10, 2))
+            nl = tk.Label(inner_card, text=lbl_txt, bg=inner_card["bg"],
+                          fg=TEXT, font=(FB, 9, "bold"))
+            nl.pack(pady=(0, 10))
+            self._m_widgets[val] = {
+                "outer": outer_card, "inner": inner_card,
+                "il": il, "nl": nl, "color": color,
+            }
+            for w in (outer_card, inner_card, il, nl):
+                w.bind("<Button-1>", lambda e, v=val: self._pick_method(v))
+
+        hsep(inner).pack(fill="x", padx=24, pady=(12, 0))
+        bf = tk.Frame(inner, bg=BG2)
+        bf.pack(padx=28, pady=(10, 28), fill="x")
+        bf.columnconfigure(0, weight=1)
+        bf.columnconfigure(1, weight=1)
+        tk.Button(bf, text="Cancel", command=self.destroy,
+                  bg=BG4, fg=TEXT2, font=(FD, 12, "bold"),
+                  relief="flat", cursor="hand2",
+                  activebackground=BG5, activeforeground=TEXT,
+                  padx=20, pady=14).grid(row=0, column=0, sticky="nsew",
+                                          padx=(0, 6))
+        self.confirm_btn = tk.Button(
+            bf, text="Select a duration first",
+            command=self._confirm,
+            bg=BG4, fg=TEXT3, font=(FD, 12, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=PURPLE2, activeforeground=TEXT,
+            padx=20, pady=14, state="disabled")
+        self.confirm_btn.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+
+    def _pick(self, minutes):
+        if self.selected and self.selected in self.tier_btns:
+            f, l1, l2 = self.tier_btns[self.selected]
+            f.config(bg=BG3, highlightbackground=BORDER)
+            l1.config(bg=BG3, fg=TEXT2)
+            l2.config(bg=BG3, fg=GREEN)
+        self.selected = minutes
+        f, l1, l2 = self.tier_btns[minutes]
+        f.config(bg=CYAN_DIM, highlightbackground=CYAN)
+        l1.config(bg=CYAN_DIM, fg=CYAN)
+        l2.config(bg=CYAN_DIM, fg=TEXT)
+        cost = calc_cost(minutes)
+        self.summary_lbl.config(
+            text=f"Adding {minutes} min  ·  {fmt_currency(cost)}")
+        self.confirm_btn.config(
+            text=f"Pay {fmt_currency(cost)} & Add Time  →",
+            bg=CYAN, fg=BG, state="normal",
+            activebackground="#0099bb")
+
+    def _pick_method(self, val):
+        self.method.set(val)
+        for v, ww in self._m_widgets.items():
+            s = v == val
+            ww["outer"].config(bg=ww["color"] if s else BORDER)
+            ww["inner"].config(bg=BG4 if s else BG3)
+            ww["il"].config(bg=BG4 if s else BG3)
+            ww["nl"].config(bg=BG4 if s else BG3)
+
+    def _confirm(self):
+        if not self.selected:
+            return
+        m = self.method.get()
+        if m == "cash":
+            self._handle_cash()
+        else:
+            self._handle_paymongo(m)
+
+    def _handle_cash(self):
+        voucher    = gen_voucher()
+        extra_min  = self.selected
+        cost       = calc_cost(extra_min)
+        add_id     = f"add-{now_ms()}"
+        db_exec("""
+            INSERT INTO sessions
+              (id, user_id, computer_id, duration, cost,
+               status, voucher_code, created_at)
+            VALUES (%s,%s,%s,%s,%s,'pending_add_time',%s,%s)
+        """, (add_id, Auth.user["id"], self.computer["id"],
+              extra_min, cost, voucher, now_ms()))
+        self.destroy()
+
+        def _activated():
+            db_exec(
+                "UPDATE sessions SET duration=duration+%s WHERE id=%s",
+                (extra_min, self.session["id"]))
+            db_exec(
+                "UPDATE sessions SET status='cancelled' WHERE id=%s",
+                (add_id,))
+            if self.on_complete:
+                self.on_complete()
+
+        CashVoucherDialog(self.app, add_id, voucher,
+                          self.computer.get("name", ""), extra_min, cost,
+                          _activated, lambda: None)
+
+    def _handle_paymongo(self, method):
+        if not Auth.user:
+            return
+        self.confirm_btn.config(state="disabled",
+                                bg=BG5, activebackground=BG5, fg=TEXT3)
+        extra_min = self.selected
+        cost      = calc_cost(extra_min)
+        add_id    = f"add-{now_ms()}"
+        info = {
+            "session_id":  add_id,
+            "computer_id": self.computer["id"],
+            "user_id":     Auth.user["id"],
+            "duration":    extra_min,
+            "method":      method,
+            "add_time_to": self.session["id"],
+        }
+        desc = (f"TimeNet Add Time — {self.computer.get('name','')} "
+                f"+ {extra_min} min ({method.upper()})")
+
+        def _create():
+            result = paymongo.create_link(cost, desc, info)
+            self.after(0, lambda: self._on_link_result(result, method, cost))
+
+        threading.Thread(target=_create, daemon=True).start()
+
+    def _on_link_result(self, result, method, cost):
+        if not result["success"]:
+            try:
+                self.confirm_btn.config(
+                    state="normal",
+                    bg=CYAN, activebackground="#0099bb", fg=BG)
+            except Exception:
+                pass
+            ThemedDialog(self, kind="error", title="Payment Error",
+                         message="Could not create payment link.",
+                         detail=result.get("error", "Unknown error"))
+            return
+        url = result["checkout_url"]
+        lid = result["link_id"]
+        orig_session_id = self.session["id"]
+        self.destroy()
+
+        def _paid():
+            db_exec(
+                "UPDATE sessions SET duration=duration+%s WHERE id=%s",
+                (self.selected or 0, orig_session_id))
+            if self.on_complete:
+                self.on_complete()
+
+        PaymentWaitingScreen(self.app, lid, url, method, cost,
+                             _paid, lambda: None)
+
+# ════════════════════════════════════════════════════════════════════
 #  PAYMENT DIALOG
 # ════════════════════════════════════════════════════════════════════
 
@@ -2605,55 +2952,108 @@ class CustomerDashboard(tk.Frame):
     def _on_paid(self):
         self._load_data()
 
+    # ── Session view ─────────────────────────────────────────────────
+
     def _show_active_session(self):
+        """
+        Called when an active session is detected.
+        Hides the booking UI, unlocks the kiosk, and renders the
+        timer widget into the floating session window.
+        """
         self._clear_content()
         self.hdr.pack_forget()
         self.hdr_sep.pack_forget()
+
         if self.app._locked:
+            # First time: create the proxy + float, then render into float
             self.app.unlock_for_session()
+        else:
+            # Already unlocked: just refresh the widget inside the float
+            win = getattr(self.app, "_session_win", None)
+            if win:
+                for w in win.winfo_children():
+                    w.destroy()
+                self._render_session_into(win)
+
+    def _render_session_into(self, container):
+        """Build the compact timer UI inside `container` (a Toplevel)."""
         computers = db_exec("SELECT * FROM computers", fetch=True) or []
         pc = next((c for c in computers
                    if c["id"] == self.active_session["computerId"]), None)
         if pc:
-            self._session_widget(pc)
+            self._build_session_widget(container, pc)
 
-    def _session_widget(self, computer):
-        outer = tk.Frame(self.content, bg=BG2)
+    def _build_session_widget(self, container, computer):
+        """
+        Renders the timer into `container`.
+        — Drag handle at top (draggable because overrideredirect=True on container)
+        — Minimize button: iconifies the PROXY → proxy <Unmap> hides the float
+          → clicking TN icon in taskbar triggers proxy <Map> → float reappears
+        — Add Time button at the bottom
+        """
+        outer = tk.Frame(container, bg=BG2)
         outer.pack(fill="both", expand=True)
-        accent_bar(outer, PURPLE, 2).pack(fill="x")
-        title_bar = tk.Frame(outer, bg=BG2)
-        title_bar.pack(fill="x", padx=6, pady=(4, 0))
-        left_side = tk.Frame(title_bar, bg=BG2)
-        left_side.pack(side="left", fill="y")
-        tk.Label(left_side, text="🖥", bg=BG2, fg=PURPLE,
-                 font=(FD, 11)).pack(side="left", padx=(2, 4))
-        tk.Label(left_side, text=computer["name"], bg=BG2, fg=TEXT3,
-                 font=(FB, 8, "bold")).pack(side="left")
 
+        # Top gradient accent
+        accent_bar(outer, PURPLE, 2).pack(fill="x")
+
+        # ── Drag handle row ──────────────────────────────────────────
+        drag_row = tk.Frame(outer, bg=BG3, cursor="fleur")
+        drag_row.pack(fill="x")
+
+        _drag = {"x": 0, "y": 0}
+
+        def _drag_start(e):
+            _drag["x"] = e.x_root - container.winfo_x()
+            _drag["y"] = e.y_root - container.winfo_y()
+
+        def _drag_move(e):
+            x = e.x_root - _drag["x"]
+            y = e.y_root - _drag["y"]
+            container.geometry(f"+{x}+{y}")
+
+        drag_row.bind("<ButtonPress-1>", _drag_start)
+        drag_row.bind("<B1-Motion>",     _drag_move)
+
+        tk.Label(drag_row, text="🖥  TimeNet", bg=BG3, fg=PURPLE,
+                 font=(FB, 8, "bold")).pack(side="left", padx=8, pady=4)
+
+        # ── Minimize button ──────────────────────────────────────────
         def _minimise():
-            try:
-                self.app.withdraw()
-            except Exception:
-                pass
+            """
+            Iconify the proxy window.
+            This triggers proxy's <Unmap> → App._on_proxy_unmap()
+            which calls session_win.withdraw() to hide the float.
+            When the user clicks the TN icon in the taskbar, the proxy
+            gets <Map> → App._on_proxy_map() shows and raises the float.
+            """
+            proxy = getattr(self.app, "_taskbar_proxy", None)
+            if proxy:
+                try:
+                    proxy.iconify()
+                except Exception:
+                    pass
 
         min_btn = tk.Button(
-            title_bar, text="  —  ", command=_minimise,
+            drag_row, text="  —  ", command=_minimise,
             bg=BG3, fg=TEXT2, font=(FD, 9, "bold"),
             relief="flat", cursor="hand2",
-            padx=6, pady=2,
-            activebackground=BG5, activeforeground=TEXT, bd=0,
+            padx=6, pady=2, bd=0,
+            activebackground=BG5, activeforeground=YELLOW,
         )
-        min_btn.pack(side="right", padx=(0, 2), pady=2)
+        min_btn.pack(side="right", padx=2, pady=2)
         min_btn.bind("<Enter>", lambda _: min_btn.config(bg=BG4, fg=YELLOW))
         min_btn.bind("<Leave>", lambda _: min_btn.config(bg=BG3, fg=TEXT2))
 
-        hsep(outer, BORDER, 1).pack(fill="x", padx=0, pady=(3, 0))
+        hsep(outer, BORDER, 1).pack(fill="x")
 
+        # ── Countdown timer ──────────────────────────────────────────
         self.time_lbl = tk.Label(
             outer, text="00:00:00", fg=TEXT, bg=BG2,
             font=(FD, 24, "bold"))
-        self.time_lbl.pack(pady=(4, 2))
+        self.time_lbl.pack(pady=(8, 2))
 
+        # Progress bar
         self.prog = ttk.Progressbar(
             outer, maximum=100, value=100,
             style="Session.Horizontal.TProgressbar")
@@ -2672,8 +3072,43 @@ class CustomerDashboard(tk.Frame):
         tk.Label(row, text=f"Ends {end_dt.strftime('%I:%M %p')}",
                  fg=CYAN, bg=BG2, font=(FB, 8, "bold")).pack(side="right")
 
+        # ── Add Time button ──────────────────────────────────────────
+        hsep(outer, BORDER, 1).pack(fill="x", padx=8, pady=(6, 0))
+
+        add_btn = tk.Button(
+            outer,
+            text="⊕  Add Time",
+            command=lambda: self._open_add_time(computer),
+            bg=BG3, fg=CYAN,
+            font=(FB, 9, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=CYAN_DIM, activeforeground=CYAN,
+            padx=10, pady=6,
+        )
+        add_btn.pack(fill="x", padx=8, pady=(4, 8))
+        add_btn.bind("<Enter>", lambda _: add_btn.config(bg=CYAN_DIM))
+        add_btn.bind("<Leave>", lambda _: add_btn.config(bg=BG3))
+
+        # Start ticking
         self._ticking = True
         self._tick()
+
+    def _open_add_time(self, computer):
+        if not self.active_session:
+            return
+
+        def _done():
+            if not Auth.user:
+                return
+            rows = db_exec(
+                "SELECT * FROM sessions WHERE id=%s",
+                (self.active_session["id"],), fetch=True)
+            if rows:
+                self.active_session = _norm_session(rows[0])
+
+        AddTimeDialog(self.app, self.active_session, computer, _done)
+
+    # ── Tick ─────────────────────────────────────────────────────────
 
     def _tick(self):
         if not self._ticking or not self.active_session:
@@ -2720,6 +3155,8 @@ class CustomerDashboard(tk.Frame):
 
         self.after(1000, self._tick)
 
+    # ── End session ──────────────────────────────────────────────────
+
     def _end_session(self):
         if not self.active_session:
             return
@@ -2744,6 +3181,8 @@ class CustomerDashboard(tk.Frame):
             pass
         self._load_data()
 
+    # ── Force load (called after payment confirmed) ───────────────────
+
     def _force_load_session(self):
         if not Auth.user:
             return
@@ -2758,6 +3197,8 @@ class CustomerDashboard(tk.Frame):
         self._last_session_id = self.active_session["id"]
         self._view_mode       = "active"
         self._show_active_session()
+
+    # ── Poll / load data ─────────────────────────────────────────────
 
     def _load_data(self):
         if not Auth.user:
