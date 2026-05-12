@@ -62,8 +62,6 @@ PAYMONGO_BASE_URL   = "https://api.paymongo.com/v1"
 
 # ════════════════════════════════════════════════════════════════════
 #  RECAPTCHA CONFIG
-#  Register at https://www.google.com/recaptcha/admin
-#  Add "localhost" and "127.0.0.1" to allowed domains.
 # ════════════════════════════════════════════════════════════════════
 
 RECAPTCHA_SITE_KEY   = "6Lex6eMsAAAAAIuGqF1G0drBafsHY3NLSEQD3473"
@@ -80,7 +78,7 @@ ADMIN_EXIT_PIN   = "1234"
 PAYMONGO_MIN_PHP = 1.00
 
 PRICING_TIERS = [
-    {"label": "15 min",  "minutes": 15},
+    {"label": "15 min",  "minutes": 1},
     {"label": "30 min",  "minutes": 30},
     {"label": "1 hour",  "minutes": 60},
     {"label": "1.5 hrs", "minutes": 90},
@@ -234,7 +232,7 @@ def find_browser():
     return None
 
 # ════════════════════════════════════════════════════════════════════
-#  TRAY ICON  (pystray — optional; gracefully skipped if not installed)
+#  TRAY ICON
 # ════════════════════════════════════════════════════════════════════
 
 _tray_icon = None
@@ -249,32 +247,26 @@ def _make_tray_image():
     size  = 64
     img   = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw  = ImageDraw.Draw(img)
-
     draw.ellipse([0, 0, size - 1, size - 1], fill=(12, 19, 32, 255))
     draw.ellipse([2, 2, size - 3, size - 3],
                  outline=(168, 85, 247, 200), width=2)
-
     mx, my, mw, mh = 10, 14, 44, 26
     draw.rounded_rectangle([mx, my, mx + mw, my + mh],
                             radius=4, fill=(23, 34, 55, 255),
                             outline=(168, 85, 247, 255), width=1)
     draw.rounded_rectangle([mx + 3, my + 3, mx + mw - 3, my + mh - 3],
                             radius=2, fill=(0, 45, 56, 255))
-
     for yi in range(my + 6, my + mh - 3, 4):
         draw.line([(mx + 5, yi), (mx + mw - 5, yi)],
                   fill=(0, 200, 232, 120), width=1)
-
     draw.rectangle([29, 40, 35, 46], fill=(23, 34, 55, 255))
     draw.rectangle([22, 46, 42, 49], fill=(23, 34, 55, 255))
-
     try:
         font = ImageFont.truetype("segoeui.ttf", 9)
     except Exception:
         font = ImageFont.load_default()
     draw.text((32, 51), "TN", fill=(168, 85, 247, 220),
               font=font, anchor="mm")
-
     return img
 
 
@@ -285,7 +277,6 @@ def start_tray(on_restore):
     except ImportError:
         print("[Tray] pystray not installed — taskbar icon disabled.")
         return
-
     img = _make_tray_image()
     if img is None:
         print("[Tray] Pillow not installed — taskbar icon disabled.")
@@ -298,8 +289,7 @@ def start_tray(on_restore):
         pystray.MenuItem("Show Timer", _restore, default=True),
         pystray.MenuItem("TimeNet Cafe", None, enabled=False),
     )
-    icon = pystray.Icon("timenet", img, "TimeNet Cafe — Session Timer",
-                        menu=menu)
+    icon = pystray.Icon("timenet", img, "TimeNet Cafe — Session Timer", menu=menu)
     _tray_icon = icon
     threading.Thread(target=icon.run, daemon=True).start()
 
@@ -368,8 +358,8 @@ def accent_bar(parent, color=PURPLE, h=3):
 
 
 def make_gradient_canvas_h(parent, height=4, c1=PURPLE, c2=CYAN):
-    c      = tk.Canvas(parent, bg=BG2, height=height, highlightthickness=0)
-    _last  = [0]
+    c     = tk.Canvas(parent, bg=BG2, height=height, highlightthickness=0)
+    _last = [0]
 
     def _paint(w):
         if w > 1 and w != _last[0]:
@@ -464,13 +454,10 @@ def add_gradient_border(dialog, thickness=3, c1=PURPLE, c2=CYAN):
 
     top = _make_h(dialog, flip=False)
     top.place(x=0, y=0, relwidth=1)
-
     bot = _make_h(dialog, flip=True)
     bot.place(x=0, rely=1.0, anchor="sw", relwidth=1)
-
     lft = _make_v(dialog, flip=False)
     lft.place(x=0, y=0, relheight=1)
-
     rgt = _make_v(dialog, flip=True)
     rgt.place(relx=1.0, y=0, anchor="ne", relheight=1)
 
@@ -511,14 +498,12 @@ class ThemedDialog(tk.Toplevel):
     def _build(self, color, dim, icon, title, message, detail):
         inner = tk.Frame(self, bg=BG2)
         inner.place(x=3, y=3, relwidth=1, relheight=1, width=-6, height=-6)
-
         badge = tk.Frame(inner, bg=dim, highlightthickness=1,
                          highlightbackground=color, width=64, height=64)
         badge.pack(pady=(28, 0))
         badge.pack_propagate(False)
         tk.Label(badge, text=icon, bg=dim, fg=color,
                  font=(FD, 26, "bold")).place(relx=0.5, rely=0.5, anchor="center")
-
         if title:
             tk.Label(inner, text=title, bg=BG2, fg=TEXT,
                      font=(FD, 15, "bold")).pack(pady=(14, 2))
@@ -535,7 +520,6 @@ class ThemedDialog(tk.Toplevel):
                      state="readonly", bg=BG3, fg=color,
                      readonlybackground=BG3, font=(FM, 10), relief="flat",
                      justify="center").pack(padx=14, pady=10, fill="x")
-
         hsep(inner, BORDER2).pack(fill="x", padx=28, pady=(20, 0))
         btn = tk.Button(inner, text="  Close  ", command=self._close,
                         bg=color, fg=BG, font=(FD, 11, "bold"),
@@ -580,14 +564,12 @@ class AdminPinDialog(tk.Toplevel):
     def _build(self):
         inner = tk.Frame(self, bg=BG2)
         inner.place(x=3, y=3, relwidth=1, relheight=1, width=-6, height=-6)
-
         tk.Label(inner, text="🔐", bg=BG2, fg=RED, font=(FD, 32)).pack(pady=(28, 0))
         tk.Label(inner, text="Admin Access Required", bg=BG2, fg=TEXT,
                  font=(FD, 15, "bold")).pack(pady=(6, 2))
         tk.Label(inner, text="Enter PIN to exit kiosk mode",
                  bg=BG2, fg=TEXT2, font=(FB, 10)).pack(pady=(0, 18))
         hsep(inner).pack(fill="x", padx=28, pady=(0, 18))
-
         self.pin_var = tk.StringVar()
         pf = tk.Frame(inner, bg=BG4, highlightthickness=2,
                       highlightbackground=BORDER3)
@@ -597,10 +579,8 @@ class AdminPinDialog(tk.Toplevel):
                      font=(FD, 24, "bold"), justify="center", relief="flat")
         e.pack(padx=12, pady=10, fill="x")
         e.focus_set()
-
         self.err = tk.Label(inner, text="", bg=BG2, fg=RED, font=(FB, 9))
         self.err.pack(pady=(10, 4))
-
         row = tk.Frame(inner, bg=BG2)
         row.pack(padx=28, pady=(14, 28), fill="x")
         ghost_button(row, "Cancel", self.destroy, TEXT2, 14).pack(
@@ -658,14 +638,12 @@ class CashVoucherDialog(tk.Toplevel):
     def _build(self):
         inner = tk.Frame(self, bg=BG2)
         inner.place(x=3, y=3, relwidth=1, relheight=1, width=-6, height=-6)
-
         tk.Label(inner, text="💵", bg=BG2, fg=GREEN, font=(FD, 44)).pack(pady=(28, 0))
         tk.Label(inner, text="Cash Payment", bg=BG2, fg=TEXT,
                  font=(FD, 17, "bold")).pack(pady=(6, 2))
         tk.Label(inner, text="Show voucher code at the counter",
                  bg=BG2, fg=TEXT2, font=(FB, 10)).pack(pady=(0, 16))
         hsep(inner).pack(fill="x", padx=24)
-
         s = tk.Frame(inner, bg=BG3, highlightthickness=1,
                      highlightbackground=BORDER2)
         s.pack(padx=28, pady=16, fill="x")
@@ -685,9 +663,7 @@ class CashVoucherDialog(tk.Toplevel):
             tk.Label(r, text=val, fg=col, bg=BG3,
                      font=(FD, sz, wt)).pack(side="right")
         tk.Frame(s, bg=BG3, height=6).pack()
-
         hsep(inner).pack(fill="x", padx=24)
-
         vc = tk.Frame(inner, bg=BG3, highlightthickness=2,
                       highlightbackground=PURPLE)
         vc.pack(padx=28, pady=18, fill="x")
@@ -707,9 +683,7 @@ class CashVoucherDialog(tk.Toplevel):
                        bg=BG5, fg=CYAN, font=(FB, 9, "bold"),
                        relief="flat", cursor="hand2", padx=14, pady=6)
         cb.pack(pady=(0, 14))
-
         hsep(inner).pack(fill="x", padx=24)
-
         sf = tk.Frame(inner, bg=BG2)
         sf.pack(pady=(14, 0))
         self.status_lbl = tk.Label(sf,
@@ -724,7 +698,6 @@ class CashVoucherDialog(tk.Toplevel):
                       "Your PC will start automatically once confirmed.",
                  bg=BG2, fg=TEXT2, font=(FB, 9),
                  justify="center").pack(pady=(8, 0))
-
         hsep(inner).pack(fill="x", padx=24, pady=16)
         bf = tk.Frame(inner, bg=BG2)
         bf.pack(padx=28, pady=(0, 28), fill="x")
@@ -789,6 +762,12 @@ class CashVoucherDialog(tk.Toplevel):
 
 # ════════════════════════════════════════════════════════════════════
 #  PAYMENT WAITING SCREEN  (GCash / Maya)
+#
+#  FIX: The main app window is hidden (withdraw) so the browser gets
+#  full screen. A slim top-bar Toplevel floats above the browser with
+#  the payment status, amount, and a Cancel button — identical to how
+#  RecaptchaWaitingScreen works. When no browser is found, a fullscreen
+#  overlay is shown instead (with the payment URL to copy/scan).
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -811,12 +790,19 @@ class PaymentWaitingScreen:
         self._overlay     = None
         self._tmp_dir     = None
         self._browser_path = find_browser()
+
         self._start_watcher()
+
         if self._browser_path:
+            # Hide main app, launch browser fullscreen, float the top bar
+            self.app.withdraw()
             self._launch_browser()
             self._build_top_bar()
         else:
+            # No browser — show a fullscreen overlay with the payment URL
             self._build_overlay()
+
+    # ── browser ───────────────────────────────────────────────────────
 
     def _launch_browser(self):
         self._tmp_dir = tempfile.mkdtemp(prefix="timenet_pay_")
@@ -831,7 +817,13 @@ class PaymentWaitingScreen:
         except Exception as e:
             print(f"[Browser] {e}")
             self._browser = None
-            self.app.after(0, self._build_overlay)
+            # Restore app and show fallback overlay
+            self.app.after(0, self._fallback_no_browser)
+
+    def _fallback_no_browser(self):
+        self.app.deiconify()
+        self._destroy_top_bar()
+        self._build_overlay()
 
     def _kill_browser(self):
         if self._browser:
@@ -848,10 +840,13 @@ class PaymentWaitingScreen:
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
             self._tmp_dir = None
 
+    # ── top bar (shown above the kiosk browser) ───────────────────────
+
     def _build_top_bar(self):
         sw     = self.app.winfo_screenwidth()
         colors = {"GCASH": ("#00B4D8", "📱"), "MAYA": (PURPLE, "💜")}
         color, icon = colors.get(self.method, (CYAN, "💳"))
+
         bar = tk.Toplevel(self.app)
         bar.configure(bg=BG2)
         bar.overrideredirect(True)
@@ -866,6 +861,7 @@ class PaymentWaitingScreen:
         inner = tk.Frame(bar, bg=BG2)
         inner.pack(fill="both", expand=True, padx=20)
 
+        # Left — icon + method name + amount
         left = tk.Frame(inner, bg=BG2)
         left.pack(side="left", fill="y")
         tk.Label(left, text=icon, bg=BG2, fg=color,
@@ -877,12 +873,15 @@ class PaymentWaitingScreen:
         tk.Label(ic, text=fmt_currency(self.amount), bg=BG2, fg=TEXT,
                  font=(FD, 11)).pack(anchor="w")
 
+        # Centre — status + dots
         self._status_lbl = tk.Label(inner, text="⏳  Waiting for payment…",
                                     bg=BG2, fg=YELLOW, font=(FB, 11, "bold"))
         self._status_lbl.pack(side="left", padx=40)
         self._dot_lbl = tk.Label(inner, text="●○○", bg=BG2, fg=TEXT3,
                                  font=(FB, 10))
         self._dot_lbl.pack(side="left")
+
+        # Right — cancel button
         tk.Button(inner, text="✕  Cancel Payment", command=self._cancel,
                   bg=RED_DIM, fg=RED, font=(FB, 11, "bold"),
                   relief="flat", cursor="hand2", padx=20, pady=8,
@@ -895,10 +894,13 @@ class PaymentWaitingScreen:
 
         self._animate()
 
+    # ── no-browser fallback overlay ───────────────────────────────────
+
     def _build_overlay(self):
         sw, sh = self.app.winfo_screenwidth(), self.app.winfo_screenheight()
         colors = {"GCASH": ("#00B4D8", "📱"), "MAYA": (PURPLE, "💜")}
         color, icon = colors.get(self.method, (CYAN, "💳"))
+
         ov = tk.Toplevel(self.app)
         ov.configure(bg=BG)
         ov.overrideredirect(True)
@@ -907,6 +909,7 @@ class PaymentWaitingScreen:
         ov.protocol("WM_DELETE_WINDOW", lambda: None)
         self._overlay = ov
 
+        # Header bar
         bar = tk.Frame(ov, bg=BG2, height=70)
         bar.pack(fill="x")
         bar.pack_propagate(False)
@@ -936,14 +939,16 @@ class PaymentWaitingScreen:
         body.pack(fill="both", expand=True)
         centre = tk.Frame(body, bg=BG)
         centre.place(relx=0.5, rely=0.5, anchor="center")
+
         tk.Label(centre, text=icon, bg=BG, fg=color,
                  font=(FD, 72)).pack(pady=(0, 12))
         tk.Label(centre,
                  text=f"Pay {fmt_currency(self.amount)} via {self.method}",
                  bg=BG, fg=TEXT, font=(FD, 20, "bold")).pack(pady=(0, 6))
         tk.Label(centre,
-                 text="No browser found — scan or open link below.",
+                 text="No browser found — scan or open the link below.",
                  bg=BG, fg=YELLOW, font=(FB, 11)).pack(pady=(0, 18))
+
         uf = tk.Frame(centre, bg=BG3, padx=20, pady=14,
                       highlightthickness=1, highlightbackground=BORDER2)
         uf.pack(fill="x", padx=40)
@@ -953,11 +958,14 @@ class PaymentWaitingScreen:
                  state="readonly", bg=BG3, fg=CYAN,
                  font=(FM, 9), relief="flat", readonlybackground=BG3,
                  width=70).pack(fill="x", pady=(4, 0))
+
         self._dot_lbl = tk.Label(centre,
                                  text="Checking payment status  ●○○",
                                  bg=BG, fg=TEXT3, font=(FB, 10))
         self._dot_lbl.pack(pady=(10, 0))
         self._animate()
+
+    # ── animation ─────────────────────────────────────────────────────
 
     def _animate(self):
         if self._done:
@@ -970,20 +978,26 @@ class PaymentWaitingScreen:
             return
         self.app.after(600, self._animate)
 
+    # ── watcher thread ────────────────────────────────────────────────
+
     def _start_watcher(self):
         def _w():
             while not self._done:
                 time.sleep(0.05)
+                # Payment confirmed by poller
                 if self.link_id not in paymongo.pending:
                     if not self._done:
                         self.app.after(0, self._on_confirmed)
                     return
+                # Browser closed by user without paying (treat as cancel)
                 proc = self._browser
                 if proc and proc.poll() is not None:
                     if not self._done and self.link_id in paymongo.pending:
                         self.app.after(0, self._cancel)
                     return
         threading.Thread(target=_w, daemon=True).start()
+
+    # ── outcome handlers ──────────────────────────────────────────────
 
     def _on_confirmed(self):
         if self._done:
@@ -999,6 +1013,8 @@ class PaymentWaitingScreen:
 
     def _finish_paid(self):
         self._destroy_all()
+        # Restore main app before handing off
+        self.app.deiconify()
         if self.on_paid:
             self.on_paid()
 
@@ -1007,18 +1023,29 @@ class PaymentWaitingScreen:
             return
         self._done = True
         paymongo.pending.pop(self.link_id, None)
-        self._destroy_all()
         threading.Thread(target=self._kill_browser, daemon=True).start()
+        self._destroy_all()
+        # Restore main app before handing off
+        self.app.deiconify()
         if self.on_cancel:
             self.on_cancel()
 
+    def _destroy_top_bar(self):
+        if self._top_bar:
+            try:
+                self._top_bar.destroy()
+            except Exception:
+                pass
+            self._top_bar = None
+
     def _destroy_all(self):
-        for w in (self._top_bar, self._overlay):
-            if w:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+        self._destroy_top_bar()
+        if self._overlay:
+            try:
+                self._overlay.destroy()
+            except Exception:
+                pass
+            self._overlay = None
 
 # ════════════════════════════════════════════════════════════════════
 #  PAYMONGO API
@@ -1533,11 +1560,6 @@ class LoginPage(tk.Frame):
 
 # ════════════════════════════════════════════════════════════════════
 #  RECAPTCHA HTML PAGE
-#
-#  Served over HTTP (http://127.0.0.1:<port>/) by the token server.
-#  This is required because Google's reCAPTCHA JS refuses to load
-#  on file:// origins. The page posts the solved token back to
-#  http://127.0.0.1:<port>/token and then closes itself.
 # ════════════════════════════════════════════════════════════════════
 
 _RECAPTCHA_HTML = """\
@@ -1574,20 +1596,11 @@ _RECAPTCHA_HTML = """\
     overflow:hidden;
     box-shadow:0 0 60px rgba(168,85,247,.18),0 0 120px rgba(0,200,232,.08);
   }}
-  .grad-bar{{
-    height:4px;
-    background:linear-gradient(90deg,#a855f7,#00c8e8);
-  }}
+  .grad-bar{{height:4px;background:linear-gradient(90deg,#a855f7,#00c8e8);}}
   .body{{padding:36px 40px 32px}}
   .icon{{font-size:42px;text-align:center;margin-bottom:10px}}
-  h2{{
-    font-size:18px;font-weight:700;text-align:center;
-    color:#e2ecff;margin-bottom:4px;
-  }}
-  .sub{{
-    font-size:11px;color:#7a9cc4;text-align:center;
-    margin-bottom:24px;
-  }}
+  h2{{font-size:18px;font-weight:700;text-align:center;color:#e2ecff;margin-bottom:4px;}}
+  .sub{{font-size:11px;color:#7a9cc4;text-align:center;margin-bottom:24px;}}
   .divider{{height:1px;background:#243a5e;margin:0 -40px 22px}}
   .rc-wrap{{
     display:flex;justify-content:center;
@@ -1605,21 +1618,9 @@ _RECAPTCHA_HTML = """\
   }}
   .status.ok {{color:#00e56e}}
   .status.err{{color:#ff3b5c}}
-  .dot-row{{
-    text-align:center;
-    font-size:11px;color:#3d5a80;
-    letter-spacing:4px;
-    margin-bottom:4px;
-  }}
-  .help{{
-    font-size:10px;color:#3d5a80;
-    text-align:center;line-height:1.6;
-    margin-bottom:18px;
-  }}
-  .grad-bar-bot{{
-    height:2px;
-    background:linear-gradient(90deg,#00c8e8,#a855f7);
-  }}
+  .dot-row{{text-align:center;font-size:11px;color:#3d5a80;letter-spacing:4px;margin-bottom:4px;}}
+  .help{{font-size:10px;color:#3d5a80;text-align:center;line-height:1.6;margin-bottom:18px;}}
+  .grad-bar-bot{{height:2px;background:linear-gradient(90deg,#00c8e8,#a855f7);}}
 </style>
 <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 </head>
@@ -1636,44 +1637,28 @@ _RECAPTCHA_HTML = """\
            data-sitekey="{site_key}"
            data-callback="onSolved"
            data-expired-callback="onExpired"
-           data-theme="dark">
-      </div>
+           data-theme="dark"></div>
     </div>
     <div class="status" id="status">⏳&nbsp; Waiting for verification…</div>
     <div class="dot-row" id="dots">●○○</div>
-    <p class="help">
-      Tick the checkbox above.<br>
-      This window closes automatically once verified.
-    </p>
+    <p class="help">Tick the checkbox above.<br>This window closes automatically once verified.</p>
   </div>
   <div class="grad-bar-bot"></div>
 </div>
 <script>
   var _d=0,_dot=['●○○','●●○','●●●','○●●'],_running=true;
-  function animDots(){{
-    if(!_running)return;
-    _d=(_d+1)%4;
-    document.getElementById('dots').textContent=_dot[_d];
-    setTimeout(animDots,600);
-  }}
+  function animDots(){{if(!_running)return;_d=(_d+1)%4;document.getElementById('dots').textContent=_dot[_d];setTimeout(animDots,600);}}
   animDots();
-
   function onSolved(token){{
     _running=false;
     var st=document.getElementById('status');
     st.textContent='✅  Verified! Closing window…';
     st.className='status ok';
     document.getElementById('dots').textContent='';
-    fetch('http://127.0.0.1:{port}/token',{{
-      method:'POST',
-      headers:{{'Content-Type':'text/plain'}},
-      body:token
-    }}).catch(function(){{}});
+    fetch('http://127.0.0.1:{port}/token',{{method:'POST',headers:{{'Content-Type':'text/plain'}},body:token}}).catch(function(){{}});
   }}
-
   function onExpired(){{
-    _running=true;
-    animDots();
+    _running=true;animDots();
     var st=document.getElementById('status');
     st.textContent='⚠  Expired — please tick again.';
     st.className='status err';
@@ -1685,9 +1670,8 @@ _RECAPTCHA_HTML = """\
 
 
 def verify_recaptcha(token):
-    """Server-side verification. Returns True if Google confirms the token."""
     if RECAPTCHA_SECRET_KEY == "YOUR_SECRET_KEY_HERE":
-        return True  # dev / placeholder mode — skip real check
+        return True
     try:
         r = requests.post(
             RECAPTCHA_VERIFY_URL,
@@ -1698,23 +1682,10 @@ def verify_recaptcha(token):
     except Exception:
         return False
 
-
 # ════════════════════════════════════════════════════════════════════
 #  RECAPTCHA WAITING SCREEN
-#
-#  Key differences from the original (broken) version:
-#
-#  1. The HTML page is served via a local HTTP server on 127.0.0.1
-#     (do_GET handler added) instead of written to a temp file and
-#     opened as file://. Google's reCAPTCHA JS refuses file:// origins
-#     so that approach simply does not work.
-#
-#  2. The browser is launched in --kiosk mode (fullscreen), exactly
-#     like PaymentWaitingScreen, with a matching top-bar overlay.
-#
-#  3. Temp dir is still created for the Chrome user-data-dir so the
-#     browser gets a clean, isolated profile.
 # ════════════════════════════════════════════════════════════════════
+
 
 class RecaptchaWaitingScreen:
     BAR_H = 72
@@ -1733,35 +1704,19 @@ class RecaptchaWaitingScreen:
         self._server    = None
         self._token     = None
         self._browser_path = find_browser()
-
-        # 1. Start the HTTP server that BOTH serves the page (GET /)
-        #    and receives the solved token (POST /token).
         self._start_server()
-
-        # 2. The URL to open — plain HTTP on localhost.
         self._page_url = f"http://127.0.0.1:{self._port}/"
-
-        # 3. Launch browser in kiosk mode + build overlay.
         if self._browser_path:
             self._launch_browser()
             self._build_top_bar()
         else:
             self._build_overlay()
-
         self._animate()
 
-    # ── HTTP server ───────────────────────────────────────────────────
-
     def _start_server(self):
-        """
-        One server handles everything:
-          GET  /        → serve the reCAPTCHA HTML (required: file:// won't work)
-          POST /token   → receive the solved token from the page JS
-        """
         import http.server
         import socketserver
-
-        screen = self  # closure
+        screen = self
 
         class _Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -1771,8 +1726,7 @@ class RecaptchaWaitingScreen:
                         port=screen._port,
                     ).encode("utf-8")
                     self.send_response(200)
-                    self.send_header("Content-Type",
-                                     "text/html; charset=utf-8")
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(html)))
                     self.end_headers()
                     self.wfile.write(html)
@@ -1794,30 +1748,19 @@ class RecaptchaWaitingScreen:
                     self.end_headers()
 
             def log_message(self, *args):
-                pass  # silence console noise
+                pass
 
         srv = socketserver.TCPServer(("127.0.0.1", 0), _Handler)
         self._port   = srv.server_address[1]
         self._server = srv
         threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-    # ── browser ──────────────────────────────────────────────────────
-
     def _launch_browser(self):
-        """
-        Open Chrome in --kiosk mode (fullscreen) pointing at the local
-        HTTP server — identical behaviour to PaymentWaitingScreen.
-        A fresh user-data-dir is used so there are no profile conflicts.
-        """
         self._tmp_dir = tempfile.mkdtemp(prefix="timenet_rc_")
         cmd = [
-            self._browser_path,
-            "--kiosk",                          # fullscreen, no chrome UI
-            self._page_url,                     # http://127.0.0.1:<port>/
-            f"--user-data-dir={self._tmp_dir}", # clean isolated profile
-            "--disable-extensions",
-            "--no-first-run",
-            "--disable-default-apps",
+            self._browser_path, "--kiosk", self._page_url,
+            f"--user-data-dir={self._tmp_dir}",
+            "--disable-extensions", "--no-first-run", "--disable-default-apps",
         ]
         try:
             self._browser = subprocess.Popen(
@@ -1829,7 +1772,6 @@ class RecaptchaWaitingScreen:
             self.app.after(0, self._build_overlay)
 
     def _watch_browser(self):
-        """If the user closes the kiosk browser window, treat it as cancel."""
         if not self._browser:
             return
         self._browser.wait()
@@ -1859,10 +1801,6 @@ class RecaptchaWaitingScreen:
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
             self._tmp_dir = None
 
-    # ── top-bar overlay (browser / kiosk mode) ────────────────────────
-    #   Sits at the very top of the screen above the kiosk browser,
-    #   just like PaymentWaitingScreen._build_top_bar.
-
     def _build_top_bar(self):
         sw  = self.app.winfo_screenwidth()
         bar = tk.Toplevel(self.app)
@@ -1872,13 +1810,10 @@ class RecaptchaWaitingScreen:
         bar.geometry(f"{sw}x{self.BAR_H}+0+0")
         bar.protocol("WM_DELETE_WINDOW", lambda: None)
         self._top_bar = bar
-
         gc = make_gradient_canvas_h(bar, height=3, c1=PURPLE, c2=CYAN)
         gc.pack(fill="x")
-
         inner = tk.Frame(bar, bg=BG2)
         inner.pack(fill="both", expand=True, padx=20)
-
         left = tk.Frame(inner, bg=BG2)
         left.pack(side="left", fill="y")
         tk.Label(left, text="🤖", bg=BG2, fg=CYAN,
@@ -1889,29 +1824,22 @@ class RecaptchaWaitingScreen:
                  font=(FD, 13, "bold")).pack(anchor="w")
         tk.Label(ic, text="Complete the reCAPTCHA in the browser window",
                  bg=BG2, fg=TEXT2, font=(FD, 10)).pack(anchor="w")
-
         self._status_lbl = tk.Label(
             inner, text="⏳  Waiting for reCAPTCHA…",
             bg=BG2, fg=YELLOW, font=(FB, 11, "bold"))
         self._status_lbl.pack(side="left", padx=40)
-
         self._dot_lbl = tk.Label(inner, text="●○○", bg=BG2, fg=TEXT3,
                                  font=(FB, 10))
         self._dot_lbl.pack(side="left")
-
         tk.Button(
-            inner, text="✕  Cancel Verification",
-            command=self._cancel,
+            inner, text="✕  Cancel Verification", command=self._cancel,
             bg=RED_DIM, fg=RED, font=(FB, 11, "bold"),
             relief="flat", cursor="hand2", padx=20, pady=8,
             activebackground=RED, activeforeground=TEXT,
             highlightthickness=1, highlightbackground=RED,
         ).pack(side="right", pady=12)
-
         bot = make_gradient_canvas_h(bar, height=2, c1=CYAN, c2=PURPLE)
         bot.pack(fill="x", side="bottom")
-
-    # ── full-screen overlay (no-browser fallback) ─────────────────────
 
     def _build_overlay(self):
         sw, sh = self.app.winfo_screenwidth(), self.app.winfo_screenheight()
@@ -1922,7 +1850,6 @@ class RecaptchaWaitingScreen:
         ov.attributes("-topmost", True)
         ov.protocol("WM_DELETE_WINDOW", lambda: None)
         self._overlay = ov
-
         bar = tk.Frame(ov, bg=BG2, height=70)
         bar.pack(fill="x")
         bar.pack_propagate(False)
@@ -1930,13 +1857,11 @@ class RecaptchaWaitingScreen:
         lf = tk.Frame(bar, bg=BG2)
         lf.pack(side="left", padx=20, fill="y")
         tk.Label(lf, text="🤖  Human Verification",
-                 bg=BG2, fg=CYAN, font=(FD, 14, "bold")).pack(
-                     side="left", pady=20)
+                 bg=BG2, fg=CYAN, font=(FD, 14, "bold")).pack(side="left", pady=20)
         rf = tk.Frame(bar, bg=BG2)
         rf.pack(side="right", padx=20)
         self._status_lbl = tk.Label(
-            rf, text="⏳  Waiting…", bg=BG2, fg=YELLOW,
-            font=(FB, 11, "bold"))
+            rf, text="⏳  Waiting…", bg=BG2, fg=YELLOW, font=(FB, 11, "bold"))
         self._status_lbl.pack(side="left", padx=(0, 16))
         tk.Button(
             rf, text="✕  Cancel", command=self._cancel,
@@ -1945,23 +1870,18 @@ class RecaptchaWaitingScreen:
             highlightthickness=1, highlightbackground=RED,
             activebackground=RED, activeforeground=TEXT,
         ).pack(side="left")
-
         gc = make_gradient_canvas_h(ov, height=2, c1=PURPLE, c2=CYAN)
         gc.pack(fill="x")
-
         body   = tk.Frame(ov, bg=BG)
         body.pack(fill="both", expand=True)
         centre = tk.Frame(body, bg=BG)
         centre.place(relx=0.5, rely=0.5, anchor="center")
-
         tk.Label(centre, text="🤖", bg=BG, fg=CYAN,
                  font=(FD, 72)).pack(pady=(0, 12))
         tk.Label(centre, text="Human Verification Required",
                  bg=BG, fg=TEXT, font=(FD, 20, "bold")).pack(pady=(0, 6))
-        tk.Label(centre,
-                 text="No browser found — open the link below in any browser.",
+        tk.Label(centre, text="No browser found — open the link below in any browser.",
                  bg=BG, fg=YELLOW, font=(FB, 11)).pack(pady=(0, 18))
-
         uf = tk.Frame(centre, bg=BG3, padx=20, pady=14,
                       highlightthickness=1, highlightbackground=BORDER2)
         uf.pack(fill="x", padx=40)
@@ -1971,13 +1891,10 @@ class RecaptchaWaitingScreen:
                  state="readonly", bg=BG3, fg=CYAN, font=(FM, 9),
                  relief="flat", readonlybackground=BG3,
                  width=70).pack(fill="x", pady=(4, 0))
-
         self._dot_lbl = tk.Label(
             centre, text="Waiting for verification  ●○○",
             bg=BG, fg=TEXT3, font=(FB, 10))
         self._dot_lbl.pack(pady=(14, 0))
-
-    # ── animation ────────────────────────────────────────────────────
 
     def _animate(self):
         if self._done:
@@ -1990,18 +1907,14 @@ class RecaptchaWaitingScreen:
             return
         self.app.after(600, self._animate)
 
-    # ── token handling ───────────────────────────────────────────────
-
     def _on_token_received(self):
         if self._done:
             return
         try:
-            self._status_lbl.config(text="🔒  Verifying with Google…",
-                                    fg=CYAN)
+            self._status_lbl.config(text="🔒  Verifying with Google…", fg=CYAN)
             self._dot_lbl.config(text="Please wait…")
         except Exception:
             pass
-
         token = self._token
 
         def _do_verify():
@@ -2016,14 +1929,12 @@ class RecaptchaWaitingScreen:
         if ok:
             self._done = True
             try:
-                self._status_lbl.config(text="✅  Verified! Continuing…",
-                                        fg=GREEN)
+                self._status_lbl.config(text="✅  Verified! Continuing…", fg=GREEN)
                 self._dot_lbl.config(text="")
             except Exception:
                 pass
             self.app.after(1200, lambda: self._finish_success(token))
         else:
-            # Failed — let user try again without closing
             try:
                 self._status_lbl.config(
                     text="✗  Verification failed — please try again.", fg=RED)
@@ -2039,8 +1950,6 @@ class RecaptchaWaitingScreen:
         if self.on_success:
             self.on_success(token)
 
-    # ── cancel ───────────────────────────────────────────────────────
-
     def _cancel(self):
         if self._done:
             return
@@ -2049,8 +1958,6 @@ class RecaptchaWaitingScreen:
         self._cleanup()
         if self.on_cancel:
             self.on_cancel()
-
-    # ── helpers ──────────────────────────────────────────────────────
 
     def _destroy_all(self):
         for w in (self._top_bar, self._overlay):
@@ -2076,18 +1983,18 @@ class RegisterPage(tk.Frame):
         make_bg_canvas(self)
         outer = tk.Frame(self, bg=BG)
         outer.place(relx=0.5, rely=0.5, anchor="center")
+
         card_border = tk.Frame(outer, bg=BORDER2)
         card_border.pack()
         card = tk.Frame(card_border, bg=BG2)
         card.pack(padx=1, pady=1)
 
-        gc = make_gradient_canvas_h(card, height=4, c1=PURPLE, c2=CYAN)
-        gc.pack(fill="x")
+        make_gradient_canvas_h(card, height=4, c1=PURPLE, c2=CYAN).pack(fill="x")
 
         tk.Label(card, text="✨", bg=BG2, fg=CYAN,
-                 font=(FD, 30)).pack(pady=(28, 0))
+                 font=(FD, 36)).pack(pady=(30, 0))
         tk.Label(card, text="Create Account", bg=BG2, fg=TEXT,
-                 font=(FD, 20, "bold")).pack(pady=(6, 2))
+                 font=(FD, 22, "bold")).pack(pady=(6, 2))
         tk.Label(card, text="Join TimeNet Cafe", bg=BG2, fg=TEXT2,
                  font=(FB, 11)).pack(pady=(0, 20))
         hsep(card).pack(fill="x", padx=36, pady=(0, 20))
@@ -2096,18 +2003,18 @@ class RegisterPage(tk.Frame):
         form.pack(padx=48, fill="x")
 
         self.err = tk.Label(form, text="", fg=RED, bg=BG2,
-                            wraplength=360, font=(FB, 10))
-        self.err.pack(fill="x", pady=(0, 10))
+                            wraplength=380, font=(FB, 10), justify="left")
+        self.err.pack(fill="x", pady=(0, 8))
 
         self.fields = {k: tk.StringVar()
                        for k in ("username", "password", "confirm")}
 
-        def _field(label, key, show=None):
-            tk.Label(form, text=label, fg=TEXT3, bg=BG2,
+        def _entry_field(parent_frm, label, key, show=None):
+            tk.Label(parent_frm, text=label, fg=TEXT3, bg=BG2,
                      font=(FB, 8, "bold")).pack(anchor="w", pady=(0, 3))
-            ff = tk.Frame(form, bg=BG4, highlightthickness=1,
+            ff = tk.Frame(parent_frm, bg=BG4, highlightthickness=1,
                           highlightbackground=BORDER2)
-            ff.pack(fill="x", pady=(0, 16))
+            ff.pack(fill="x", pady=(0, 14))
             kw = {"show": show} if show else {}
             e = tk.Entry(ff, textvariable=self.fields[key],
                          bg=BG4, fg=TEXT, insertbackground=PURPLE,
@@ -2119,60 +2026,53 @@ class RegisterPage(tk.Frame):
                    lambda _: ff.config(highlightbackground=BORDER2))
             return e
 
-        _field("USERNAME",         "username")
-        _field("PASSWORD",         "password", show="●")
-        _field("CONFIRM PASSWORD", "confirm",  show="●")
+        _entry_field(form, "USERNAME", "username")
 
-        # ── reCAPTCHA section ─────────────────────────────────────────
+        pw_row = tk.Frame(form, bg=BG2)
+        pw_row.pack(fill="x")
+        pw_row.columnconfigure(0, weight=1)
+        pw_row.columnconfigure(1, weight=1)
+        lf = tk.Frame(pw_row, bg=BG2)
+        lf.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        rf_frm = tk.Frame(pw_row, bg=BG2)
+        rf_frm.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        _entry_field(lf,     "PASSWORD",         "password", show="●")
+        _entry_field(rf_frm, "CONFIRM PASSWORD", "confirm",  show="●")
 
         hsep(form, BORDER).pack(fill="x", pady=(0, 14))
 
-        hrow = tk.Frame(form, bg=BG2)
-        hrow.pack(fill="x", pady=(0, 8))
-        tk.Label(hrow, text="🤖", bg=BG2, fg=CYAN,
-                 font=(FD, 13)).pack(side="left", padx=(0, 6))
-        tk.Label(hrow, text="HUMAN VERIFICATION", fg=CYAN, bg=BG2,
-                 font=(FB, 8, "bold")).pack(side="left")
+        rc_card = tk.Frame(form, bg=BG3, highlightthickness=1,
+                           highlightbackground=BORDER3)
+        rc_card.pack(fill="x", pady=(0, 14))
 
-        self._rc_badge = tk.Frame(
-            form, bg=BG3, highlightthickness=2,
-            highlightbackground=BORDER3)
-        self._rc_badge.pack(fill="x", pady=(0, 10))
+        rc_left = tk.Frame(rc_card, bg=BG3)
+        rc_left.pack(side="left", padx=(14, 8), pady=12)
+        self._rc_icon = tk.Label(rc_left, text="🔒", bg=BG3, fg=TEXT3,
+                                 font=(FD, 20))
+        self._rc_icon.pack()
 
-        badge_inner = tk.Frame(self._rc_badge, bg=BG3)
-        badge_inner.pack(padx=14, pady=12, fill="x")
-
-        self._rc_icon = tk.Label(
-            badge_inner, text="🔒", bg=BG3, fg=TEXT3,
-            font=(FD, 20))
-        self._rc_icon.pack(side="left", padx=(0, 12))
-
-        rc_text = tk.Frame(badge_inner, bg=BG3)
-        rc_text.pack(side="left", fill="both", expand=True)
-
-        self._rc_title = tk.Label(
-            rc_text, text="Not verified yet",
-            bg=BG3, fg=TEXT2, font=(FB, 10, "bold"), anchor="w")
+        rc_mid = tk.Frame(rc_card, bg=BG3)
+        rc_mid.pack(side="left", fill="both", expand=True, pady=12)
+        self._rc_title = tk.Label(rc_mid, text="Human Verification",
+                                  bg=BG3, fg=TEXT2,
+                                  font=(FB, 10, "bold"), anchor="w")
         self._rc_title.pack(fill="x")
-
-        self._rc_sub = tk.Label(
-            rc_text,
-            text="Click the button below to open the reCAPTCHA popup.",
-            bg=BG3, fg=TEXT3, font=(FB, 9), anchor="w", wraplength=240)
+        self._rc_sub = tk.Label(rc_mid,
+                                text="Click Verify to open the reCAPTCHA popup.",
+                                bg=BG3, fg=TEXT3, font=(FB, 9),
+                                anchor="w", wraplength=200)
         self._rc_sub.pack(fill="x")
 
         self._rc_btn = tk.Button(
-            form,
-            text="🛡  Open reCAPTCHA Verification",
+            rc_card, text="🛡  Verify",
             command=self._launch_recaptcha,
-            bg=CYAN_DIM, fg=CYAN,
-            font=(FD, 10, "bold"),
+            bg=CYAN_DIM, fg=CYAN, font=(FD, 9, "bold"),
             relief="flat", cursor="hand2",
             activebackground=CYAN, activeforeground=BG,
             highlightthickness=1, highlightbackground=CYAN,
-            padx=16, pady=10,
+            padx=14, pady=8,
         )
-        self._rc_btn.pack(fill="x", pady=(0, 16))
+        self._rc_btn.pack(side="right", padx=12, pady=12)
         self._rc_btn.bind(
             "<Enter>", lambda _: self._rc_btn.config(bg=CYAN, fg=BG)
             if not self._captcha_token else None)
@@ -2181,17 +2081,15 @@ class RegisterPage(tk.Frame):
             if not self._captcha_token else
             self._rc_btn.config(bg=GREEN_DIM, fg=GREEN))
 
-        # ── end reCAPTCHA section ──────────────────────────────────────
-
         tk.Button(form, text="Create Account →", command=self._register,
-                  bg=PURPLE, fg=TEXT, font=(FD, 13, "bold"),
+                  bg=PURPLE, fg=TEXT, font=(FD, 12, "bold"),
                   relief="flat", cursor="hand2",
                   activebackground=PURPLE2, activeforeground=TEXT,
                   padx=20, pady=14).pack(fill="x", pady=(0, 6))
 
-        hsep(card).pack(fill="x", padx=36, pady=18)
+        hsep(card).pack(fill="x", padx=36, pady=20)
         footer = tk.Frame(card, bg=BG2)
-        footer.pack(pady=(0, 26))
+        footer.pack(pady=(0, 28))
         tk.Label(footer, text="Already have an account? ", fg=TEXT2, bg=BG2,
                  font=(FB, 10)).pack(side="left")
         bl = tk.Label(footer, text="Sign in here", fg=CYAN, bg=BG2,
@@ -2199,48 +2097,38 @@ class RegisterPage(tk.Frame):
         bl.pack(side="left")
         bl.bind("<Button-1>", lambda _: self.app.show_login())
 
-    # ── reCAPTCHA ─────────────────────────────────────────────────────
-
     def _launch_recaptcha(self):
-        self._rc_btn.config(
-            state="disabled", bg=BG4, fg=TEXT3,
-            text="⏳  Opening verification…")
+        self._rc_btn.config(state="disabled", bg=BG4, fg=TEXT3,
+                            text="⏳  Opening…")
         self.err.config(text="")
 
         def _on_solved(token):
             self._captcha_token = token
-            self._rc_badge.config(highlightbackground=GREEN)
             self._rc_icon.config(text="✅", fg=GREEN)
             self._rc_title.config(text="Verified!", fg=GREEN)
             self._rc_sub.config(
-                text="reCAPTCHA passed. You can now create your account.",
-                fg=GREEN2)
+                text="reCAPTCHA passed. You can now register.", fg=GREEN2)
             self._rc_btn.config(
-                state="normal",
-                bg=GREEN_DIM, fg=GREEN,
-                text="✓  Verified — click to re-verify",
+                state="normal", bg=GREEN_DIM, fg=GREEN,
+                text="✓  Re-verify",
                 activebackground=GREEN, activeforeground=BG)
             self._rc_btn.unbind("<Enter>")
             self._rc_btn.unbind("<Leave>")
-            self._rc_btn.bind(
-                "<Enter>", lambda _: self._rc_btn.config(bg=GREEN, fg=BG))
-            self._rc_btn.bind(
-                "<Leave>", lambda _: self._rc_btn.config(bg=GREEN_DIM, fg=GREEN))
+            self._rc_btn.bind("<Enter>",
+                              lambda _: self._rc_btn.config(bg=GREEN, fg=BG))
+            self._rc_btn.bind("<Leave>",
+                              lambda _: self._rc_btn.config(bg=GREEN_DIM,
+                                                            fg=GREEN))
 
         def _on_cancel():
-            self._rc_btn.config(
-                state="normal",
-                bg=CYAN_DIM, fg=CYAN,
-                text="🛡  Open reCAPTCHA Verification")
+            self._rc_btn.config(state="normal", bg=CYAN_DIM, fg=CYAN,
+                                text="🛡  Verify")
 
         RecaptchaWaitingScreen(self.app, on_success=_on_solved,
                                on_cancel=_on_cancel)
 
-    # ── registration logic ────────────────────────────────────────────
-
     def _register(self):
         d = {k: v.get().strip() for k, v in self.fields.items()}
-
         if not d["username"] or not d["password"] or not d["confirm"]:
             self.err.config(text="⚠  Please fill in all fields.")
             return
@@ -2248,8 +2136,7 @@ class RegisterPage(tk.Frame):
             self.err.config(text="✗  Passwords do not match.")
             return
         if len(d["password"]) < 6:
-            self.err.config(
-                text="✗  Password must be at least 6 characters.")
+            self.err.config(text="✗  Password must be at least 6 characters.")
             return
         if not self._captcha_token:
             self.err.config(
@@ -2267,7 +2154,6 @@ class RegisterPage(tk.Frame):
                 self.after(0, lambda: self.err.config(
                     text="✗  Username already taken.", fg=RED))
                 return
-
             new = {
                 "id":       f"user-{now_ms()}",
                 "username": d["username"],
@@ -2385,24 +2271,19 @@ class PaymentDialog(tk.Toplevel):
         self._update_note()
 
         hsep(inner).pack(fill="x", padx=24, pady=18)
-
         bf = tk.Frame(inner, bg=BG2)
         bf.pack(padx=28, pady=(0, 32), fill="x")
         bf.columnconfigure(0, weight=1)
         bf.columnconfigure(1, weight=1)
-
         tk.Button(
-            bf, text="Cancel",
-            command=self.destroy,
+            bf, text="Cancel", command=self.destroy,
             bg=BG4, fg=TEXT2, font=(FD, 13, "bold"),
             relief="flat", cursor="hand2",
             activebackground=BG5, activeforeground=TEXT,
             padx=20, pady=16,
         ).grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-
         self.confirm_btn = tk.Button(
-            bf,
-            text=f"Pay {fmt_currency(self.cost)}  →",
+            bf, text=f"Pay {fmt_currency(self.cost)}  →",
             command=self._confirm,
             bg=PURPLE, fg=TEXT, font=(FD, 13, "bold"),
             relief="flat", cursor="hand2",
@@ -2423,8 +2304,7 @@ class PaymentDialog(tk.Toplevel):
 
     def _update_note(self):
         notes = {
-            "cash":  "💵 A voucher code will be generated. "
-                     "Show it at the counter.",
+            "cash":  "💵 A voucher code will be generated. Show it at the counter.",
             "gcash": "📱 GCash checkout opens in a secure browser popup.",
             "maya":  "💜 Maya checkout opens in a secure browser popup.",
         }
@@ -2472,17 +2352,14 @@ class PaymentDialog(tk.Toplevel):
             ThemedDialog(self, kind="error", title="Not Logged In",
                          message="Please login first.")
             return
-
         self.confirm_btn.config(state="disabled",
                                 bg=BG5, activebackground=BG5, fg=TEXT3)
         self._spinner = tk.Label(
-            self.confirm_btn,
-            text="⏳  Creating link…",
+            self.confirm_btn, text="⏳  Creating link…",
             bg=BG5, fg=TEXT2, font=(FD, 11, "bold"))
         self._spinner.place(relx=0, rely=0, relwidth=1, relheight=1)
         self._spinner.lift()
         self.update()
-
         session_id    = f"sess-{now_ms()}"
         computer_id   = self.dash.assigned_computer["id"]
         computer_name = self.dash.assigned_computer["name"]
@@ -2557,11 +2434,9 @@ class CustomerDashboard(tk.Frame):
         self.active_session    = None
         self.assigned_computer = None
         self._ticking          = False
-
         self._last_session_id    = None
         self._last_booking_state = None
         self._view_mode          = None
-
         self._build()
         self._load_data()
         self._poll()
@@ -2573,7 +2448,6 @@ class CustomerDashboard(tk.Frame):
         gc.pack(fill="x")
         hi = tk.Frame(self.hdr, bg=BG2)
         hi.pack(fill="x", padx=28, pady=14)
-
         left = tk.Frame(hi, bg=BG2)
         left.pack(side="left")
         tk.Label(left, text="🖥", bg=BG2, fg=PURPLE,
@@ -2585,7 +2459,6 @@ class CustomerDashboard(tk.Frame):
         self.welcome_lbl = tk.Label(tc, text="", bg=BG2, fg=TEXT2,
                                     font=(FB, 10))
         self.welcome_lbl.pack(anchor="w")
-
         right = tk.Frame(hi, bg=BG2)
         right.pack(side="right")
         self.logout_btn = ghost_button(right, "Sign Out", self._logout,
@@ -2702,8 +2575,7 @@ class CustomerDashboard(tk.Frame):
         tk.Label(c, text="No Computers Available", bg=BG, fg=TEXT,
                  font=(FD, 20, "bold")).pack()
         tk.Label(c,
-                 text="All PCs are currently in use. "
-                      "Please check back shortly.",
+                 text="All PCs are currently in use. Please check back shortly.",
                  fg=TEXT2, bg=BG, font=(FB, 11)).pack(pady=8)
 
     def _pick_tier(self, minutes):
@@ -2748,26 +2620,15 @@ class CustomerDashboard(tk.Frame):
     def _session_widget(self, computer):
         outer = tk.Frame(self.content, bg=BG2)
         outer.pack(fill="both", expand=True)
-
         accent_bar(outer, PURPLE, 2).pack(fill="x")
-
         title_bar = tk.Frame(outer, bg=BG2)
         title_bar.pack(fill="x", padx=6, pady=(4, 0))
-
         left_side = tk.Frame(title_bar, bg=BG2)
         left_side.pack(side="left", fill="y")
-
-        tk.Label(
-            left_side, text="🖥", bg=BG2, fg=PURPLE,
-            font=(FD, 11),
-        ).pack(side="left", padx=(2, 4))
-
-        tk.Label(
-            left_side,
-            text=computer["name"],
-            bg=BG2, fg=TEXT3,
-            font=(FB, 8, "bold"),
-        ).pack(side="left")
+        tk.Label(left_side, text="🖥", bg=BG2, fg=PURPLE,
+                 font=(FD, 11)).pack(side="left", padx=(2, 4))
+        tk.Label(left_side, text=computer["name"], bg=BG2, fg=TEXT3,
+                 font=(FB, 8, "bold")).pack(side="left")
 
         def _minimise():
             try:
@@ -2776,59 +2637,40 @@ class CustomerDashboard(tk.Frame):
                 pass
 
         min_btn = tk.Button(
-            title_bar,
-            text="  —  ",
-            command=_minimise,
-            bg=BG3,
-            fg=TEXT2,
-            font=(FD, 9, "bold"),
-            relief="flat",
-            cursor="hand2",
-            padx=6,
-            pady=2,
-            activebackground=BG5,
-            activeforeground=TEXT,
-            bd=0,
+            title_bar, text="  —  ", command=_minimise,
+            bg=BG3, fg=TEXT2, font=(FD, 9, "bold"),
+            relief="flat", cursor="hand2",
+            padx=6, pady=2,
+            activebackground=BG5, activeforeground=TEXT, bd=0,
         )
         min_btn.pack(side="right", padx=(0, 2), pady=2)
-        min_btn.bind("<Enter>",
-                     lambda _: min_btn.config(bg=BG4, fg=YELLOW))
-        min_btn.bind("<Leave>",
-                     lambda _: min_btn.config(bg=BG3, fg=TEXT2))
+        min_btn.bind("<Enter>", lambda _: min_btn.config(bg=BG4, fg=YELLOW))
+        min_btn.bind("<Leave>", lambda _: min_btn.config(bg=BG3, fg=TEXT2))
 
         hsep(outer, BORDER, 1).pack(fill="x", padx=0, pady=(3, 0))
 
         self.time_lbl = tk.Label(
-            outer, text="00:00:00",
-            fg=TEXT, bg=BG2,
-            font=(FD, 24, "bold"),
-        )
+            outer, text="00:00:00", fg=TEXT, bg=BG2,
+            font=(FD, 24, "bold"))
         self.time_lbl.pack(pady=(4, 2))
 
         self.prog = ttk.Progressbar(
             outer, maximum=100, value=100,
-            style="Session.Horizontal.TProgressbar",
-        )
+            style="Session.Horizontal.TProgressbar")
         self.prog.pack(fill="x", padx=10, pady=(0, 3))
 
         row = tk.Frame(outer, bg=BG2)
         row.pack(fill="x", padx=10)
         self.pct_lbl = tk.Label(
-            row, text="100%", fg=PURPLE, bg=BG2,
-            font=(FB, 8, "bold"),
-        )
+            row, text="100%", fg=PURPLE, bg=BG2, font=(FB, 8, "bold"))
         self.pct_lbl.pack(side="left")
 
         total_min = self.active_session.get("duration", 60)
         start_ms  = self.active_session.get("startTime", now_ms())
         end_dt    = datetime.fromtimestamp(
             (start_ms + total_min * 60 * 1000) / 1000)
-        tk.Label(
-            row,
-            text=f"Ends {end_dt.strftime('%I:%M %p')}",
-            fg=CYAN, bg=BG2,
-            font=(FB, 8, "bold"),
-        ).pack(side="right")
+        tk.Label(row, text=f"Ends {end_dt.strftime('%I:%M %p')}",
+                 fg=CYAN, bg=BG2, font=(FB, 8, "bold")).pack(side="right")
 
         self._ticking = True
         self._tick()
@@ -2920,7 +2762,6 @@ class CustomerDashboard(tk.Frame):
     def _load_data(self):
         if not Auth.user:
             return
-
         rows   = db_exec(
             "SELECT * FROM sessions WHERE user_id=%s AND status='active'",
             (Auth.user["id"],), fetch=True)
