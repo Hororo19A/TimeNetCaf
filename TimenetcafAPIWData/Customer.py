@@ -1,7 +1,12 @@
 """
 TimeNet Cafe — Customer Kiosk  (rewritten for new schema)
 ─────────────────────────────────────────────────────────
-Schema changes reflected here:
+FIX: THIS_COMPUTER_ID now correctly filters the assigned PC.
+     The customer dashboard always shows the PC matching THIS_COMPUTER_ID,
+     not just the first available one.
+     The "ID: pc" text label has been removed from the booking view.
+
+Schema:
   users       → id = username | registered_on_pc | created_at (real ms)
   sessions    → id = ses-<username>-<ms> | username (no user_id) |
                      start_time / end_time = real epoch-ms |
@@ -39,9 +44,9 @@ DB_CONFIG = {
     "database": "timenet",
 }
 
-# ── Which PC is this kiosk running on? ──────────────────────────────
-# Change this to match the computer.id in your database (e.g. "pc-01")
+# ── Change this per machine ──────────────────────────────────────────
 THIS_COMPUTER_ID = "pc-01"
+# ────────────────────────────────────────────────────────────────────
 
 PAYMONGO_SECRET_KEY = "sk_test_knuivMbT2mfYaub4f6oDNh5y"
 PAYMONGO_PUBLIC_KEY = "pk_test_78P7sdJ2p33LmgwFLnrsTHQB"
@@ -57,7 +62,7 @@ ADMIN_EXIT_PIN   = "1234"
 PAYMONGO_MIN_PHP = 1.00
 
 PRICING_TIERS = [
-    {"label": "15 min",  "minutes": 1},
+    {"label": "15 min",  "minutes": 15},
     {"label": "30 min",  "minutes": 30},
     {"label": "1 hour",  "minutes": 60},
     {"label": "1.5 hrs", "minutes": 90},
@@ -145,7 +150,6 @@ def db_exec(query, params=(), fetch=False):
 
 
 def norm_session(r):
-    """Normalise a sessions row to consistent key names."""
     return {
         "id":           r["id"],
         "username":     r.get("username", ""),
@@ -166,7 +170,6 @@ def norm_session(r):
 # ════════════════════════════════════════════════════════════════════
 
 def now_ms():
-    """Current time as integer epoch-milliseconds."""
     return int(time.time() * 1000)
 
 
@@ -175,17 +178,14 @@ def fmt_currency(amount):
 
 
 def gen_session_id(username):
-    """ses-<username>-<epoch_ms>"""
     return f"ses-{username}-{now_ms()}"
 
 
 def gen_payment_id(username):
-    """pay-<username>-<epoch_ms>"""
     return f"pay-{username}-{now_ms()}"
 
 
 def gen_receipt():
-    """RN-DD-MM-YYYY-XXX"""
     now = datetime.now()
     rnd = str(random.randint(0, 999)).zfill(3)
     return f"RN-{now.day:02d}-{now.month:02d}-{now.year}-{rnd}"
@@ -209,6 +209,17 @@ def paymongo_headers():
         "Content-Type":  "application/json",
         "Accept":        "application/json",
     }
+
+
+def get_this_computer():
+    """
+    Always returns the computer row for THIS_COMPUTER_ID.
+    Returns None if the ID doesn't exist in the DB.
+    """
+    rows = db_exec(
+        "SELECT * FROM computers WHERE id=%s",
+        (THIS_COMPUTER_ID,), fetch=True)
+    return rows[0] if rows else None
 
 
 def find_browser():
@@ -1021,14 +1032,10 @@ class PayMongoAPI:
             return "error"
 
     def activate(self, info):
-        """
-        Called when PayMongo confirms payment.
-        Uses real now_ms() for start_time.
-        """
         sid      = info["session_id"]
         cid      = info["computer_id"]
         username = info.get("username", "")
-        ts       = now_ms()   # real timestamp
+        ts       = now_ms()
 
         db_exec(
             "UPDATE sessions SET status='active', start_time=%s WHERE id=%s",
@@ -1038,7 +1045,6 @@ class PayMongoAPI:
             "current_session_id=%s WHERE id=%s",
             (sid, cid))
 
-        # Insert session row only if it doesn't exist yet
         existing = db_exec("SELECT id FROM sessions WHERE id=%s",
                            (sid,), fetch=True)
         if not existing:
@@ -1050,7 +1056,6 @@ class PayMongoAPI:
             """, (sid, username, cid,
                   info.get("duration", 0), info.get("amount", 0), ts))
 
-        # Record payment with real timestamp and formatted receipt
         db_exec("""
             INSERT IGNORE INTO payments
               (id, session_id, username, amount, method, timestamp, receipt_no, status)
@@ -1307,16 +1312,45 @@ class App(tk.Tk):
             import ctypes
             user32 = ctypes.windll.user32
             hwnd   = self.winfo_id()
-            MOD_WIN= 0x0008
-            vks = [
-                0x09, 0x44, 0x45, 0x49, 0x4C, 0x52, 0x53, 0x58,
-                0x41, 0x4B, 0x50, 0x1B, 0x70, 0x20, 0x21, 0x22,
+
+            MOD_ALT      = 0x0001
+            MOD_CTRL     = 0x0002
+            MOD_WIN      = 0x0008
+            MOD_NOREPEAT = 0x4000
+
+            win_vks = [
+                0x09,
+                0x44, 0x45, 0x49, 0x4C, 0x52,
+                0x53, 0x58, 0x41, 0x4B, 0x50,
+                0x4D, 0x55, 0x56, 0x57, 0x5A,
+                0x1B,
+                0x70,
+                0x20,
+                0x21, 0x22,
                 0x25, 0x26, 0x27, 0x28,
+                0x31, 0x32, 0x33, 0x34, 0x35,
+                0x36, 0x37, 0x38, 0x39, 0x30,
             ]
-            for i, vk in enumerate(vks):
-                hid = 0xBE01 + i
-                if user32.RegisterHotKey(hwnd, hid, MOD_WIN, vk):
-                    self._registered_hk_ids.append(hid)
+            alt_vks  = [0x73, 0x09, 0x1B, 0x20, 0x79]
+            ctrl_vks = [0x1B, 0x09]
+
+            registered = []
+            hid = 0xBE01
+
+            for vk in win_vks:
+                if user32.RegisterHotKey(hwnd, hid, MOD_WIN | MOD_NOREPEAT, vk):
+                    registered.append(hid)
+                hid += 1
+            for vk in alt_vks:
+                if user32.RegisterHotKey(hwnd, hid, MOD_ALT | MOD_NOREPEAT, vk):
+                    registered.append(hid)
+                hid += 1
+            for vk in ctrl_vks:
+                if user32.RegisterHotKey(hwnd, hid, MOD_CTRL | MOD_NOREPEAT, vk):
+                    registered.append(hid)
+                hid += 1
+
+            self._registered_hk_ids = registered
         except Exception:
             pass
 
@@ -1341,15 +1375,32 @@ class App(tk.Tk):
 
     def _hook_loop(self):
         import ctypes, ctypes.wintypes
-        WH_KEYBOARD_LL  = 13
-        WM_KEYDOWN      = 0x0100
-        WM_SYSKEYDOWN   = 0x0104
-        HC_ACTION       = 0
-        PM_REMOVE       = 0x0001
-        VK_LWIN, VK_RWIN= 0x5B, 0x5C
-        MOD_ALT         = 0x20
-        VK_F4, VK_ESC   = 0x73, 0x1B
-        VK_TAB, VK_SPACE= 0x09, 0x20
+
+        WH_KEYBOARD_LL = 13
+        WM_KEYDOWN     = 0x0100
+        WM_KEYUP       = 0x0101
+        WM_SYSKEYDOWN  = 0x0104
+        WM_SYSKEYUP    = 0x0105
+        HC_ACTION      = 0
+        PM_REMOVE      = 0x0001
+
+        VK_LWIN  = 0x5B
+        VK_RWIN  = 0x5C
+        VK_APPS  = 0x5D
+        VK_TAB   = 0x09
+        VK_ESC   = 0x1B
+        VK_F4    = 0x73
+        VK_F10   = 0x79
+        VK_F12   = 0x7B
+        VK_SPACE = 0x20
+
+        VK_LCONTROL = 0xA2
+        VK_RCONTROL = 0xA3
+        VK_LSHIFT   = 0xA0
+        VK_RSHIFT   = 0xA1
+
+        MOD_ALT_FLAG = 0x20
+
         user32   = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
 
@@ -1365,23 +1416,44 @@ class App(tk.Tk):
         HOOKPROC = ctypes.WINFUNCTYPE(
             ctypes.c_long, ctypes.c_int,
             ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
-        win_dn   = [False]
+
+        win_down = [False]
         hook_ref = [None]
+
+        def _key_held(vk):
+            return bool(user32.GetAsyncKeyState(vk) & 0x8000)
 
         def _handler(nCode, wParam, lParam):
             if nCode != HC_ACTION:
                 return user32.CallNextHookEx(hook_ref[0], nCode, wParam, lParam)
-            kb  = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-            vk  = kb.vkCode
-            alt = bool(kb.flags & MOD_ALT)
+
+            kb    = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            vk    = kb.vkCode
+            alt   = bool(kb.flags & MOD_ALT_FLAG)
             is_dn = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
+
             if vk in (VK_LWIN, VK_RWIN):
-                win_dn[0] = is_dn
+                win_down[0] = is_dn
                 return 1
-            if win_dn[0]:
+            if vk == VK_APPS:
                 return 1
-            if alt and vk in (VK_TAB, VK_ESC, VK_F4, VK_SPACE):
+            if win_down[0]:
                 return 1
+
+            ctrl  = _key_held(VK_LCONTROL) or _key_held(VK_RCONTROL)
+            shift = _key_held(VK_LSHIFT)   or _key_held(VK_RSHIFT)
+
+            if alt and vk in (VK_F4, VK_TAB, VK_ESC, VK_SPACE, VK_F10):
+                return 1
+            if ctrl and vk == VK_ESC:
+                return 1
+            if ctrl and shift and vk == VK_ESC:
+                return 1
+            if ctrl and alt:
+                return 1
+            if vk == VK_F12:
+                return 1
+
             return user32.CallNextHookEx(hook_ref[0], nCode, wParam, lParam)
 
         cb   = HOOKPROC(_handler)
@@ -2113,9 +2185,9 @@ class RegisterPage(tk.Frame):
                     text="✗  Username already taken.", fg=RED))
                 return
 
-            ts = now_ms()  # real registration timestamp
+            ts = now_ms()
             new_user = {
-                "id":       d["username"],          # id = username
+                "id":       d["username"],
                 "username": d["username"],
                 "password": d["password"],
                 "role":     "customer",
@@ -2537,9 +2609,9 @@ class PaymentDialog(tk.Toplevel):
             return
         username   = Auth.username()
         voucher    = gen_voucher()
-        session_id = gen_session_id(username)          # ses-<username>-<ms>
+        session_id = gen_session_id(username)
         computer   = self.dash.assigned_computer
-        ts         = now_ms()                           # real timestamp
+        ts         = now_ms()
 
         db_exec("""
             INSERT INTO sessions
@@ -2584,7 +2656,7 @@ class PaymentDialog(tk.Toplevel):
         self._spinner.lift()
         self.update()
         username      = Auth.username()
-        session_id    = gen_session_id(username)        # ses-<username>-<ms>
+        session_id    = gen_session_id(username)
         computer_id   = self.dash.assigned_computer["id"]
         computer_name = self.dash.assigned_computer["name"]
         info = {
@@ -2664,8 +2736,6 @@ class CustomerDashboard(tk.Frame):
         self._load_data()
         self._poll()
 
-    # ── SHELL ────────────────────────────────────────────────────
-
     def _build(self):
         self.hdr = tk.Frame(self, bg=BG2)
         self.hdr.pack(fill="x")
@@ -2697,21 +2767,35 @@ class CustomerDashboard(tk.Frame):
         for w in self.content.winfo_children():
             w.destroy()
 
-    # ── BOOKING VIEW ─────────────────────────────────────────────
+    def _get_this_pc(self):
+        """Return the computers row for THIS_COMPUTER_ID, or None."""
+        return get_this_computer()
 
     def _show_booking(self):
         self._clear_content()
 
-        computers = db_exec("SELECT * FROM computers", fetch=True) or []
-        available = [c for c in computers if c["status"] == "available"]
-        if not available:
+        computer = self._get_this_pc()
+
+        if computer is None:
             self._view_mode = "no_computers"
-            self._show_no_computers()
+            self._show_no_computers(
+                title="Computer Not Found",
+                body=f"This kiosk ({THIS_COMPUTER_ID}) is not registered in the system.\n"
+                     f"Please contact staff.")
+            return
+
+        if computer["status"] != "available":
+            self._view_mode = "no_computers"
+            self._last_booking_state = (computer["status"], computer["id"])
+            self._show_no_computers(
+                title="This PC is Currently Unavailable",
+                body=f"{computer['name']} is {computer['status']}.\n"
+                     f"Please wait or contact staff.")
             return
 
         self._view_mode          = "booking"
-        self.assigned_computer   = available[0]
-        self._last_booking_state = (len(available), self.assigned_computer["id"])
+        self.assigned_computer   = computer
+        self._last_booking_state = (computer["status"], computer["id"])
         self.selected_tier       = None
 
         canvas = tk.Canvas(self.content, bg=BG, highlightthickness=0)
@@ -2739,7 +2823,7 @@ class CustomerDashboard(tk.Frame):
                  font=(FD, 36)).pack(side="left", padx=(0, 20))
         info = tk.Frame(pi, bg=BG2)
         info.pack(side="left")
-        tk.Label(info, text=self.assigned_computer["name"], bg=BG2,
+        tk.Label(info, text=computer["name"], bg=BG2,
                  fg=TEXT, font=(FD, 22, "bold")).pack(anchor="w")
         rf = tk.Frame(info, bg=BG2)
         rf.pack(anchor="w")
@@ -2790,18 +2874,16 @@ class CustomerDashboard(tk.Frame):
             padx=20, pady=18, state="disabled")
         self.pay_btn.pack(pady=20, fill="x")
 
-    def _show_no_computers(self):
+    def _show_no_computers(self, title="No Computers Available",
+                           body="All PCs are currently in use. Please check back shortly."):
         c = tk.Frame(self.content, bg=BG)
         c.place(relx=0.5, rely=0.5, anchor="center")
         tk.Label(c, text="🖥", font=(FD, 56), bg=BG,
                  fg=TEXT3).pack(pady=(0, 10))
-        tk.Label(c, text="No Computers Available", bg=BG, fg=TEXT,
+        tk.Label(c, text=title, bg=BG, fg=TEXT,
                  font=(FD, 20, "bold")).pack()
-        tk.Label(c,
-                 text="All PCs are currently in use. Please check back shortly.",
-                 fg=TEXT2, bg=BG, font=(FB, 11)).pack(pady=8)
-
-    # ── PAUSED SESSION VIEW ──────────────────────────────────────
+        tk.Label(c, text=body, fg=TEXT2, bg=BG,
+                 font=(FB, 11), justify="center").pack(pady=8)
 
     def _show_paused_session(self):
         self._clear_content()
@@ -2877,8 +2959,6 @@ class CustomerDashboard(tk.Frame):
             bg=BG, fg=TEXT3, font=(FB, 9),
             justify="center").pack(pady=(14, 0))
 
-    # ── PICK TIER ────────────────────────────────────────────────
-
     def _pick_tier(self, minutes):
         if self.selected_tier is not None and self.selected_tier != minutes:
             prev = self.tier_btns.get(self.selected_tier)
@@ -2911,8 +2991,6 @@ class CustomerDashboard(tk.Frame):
 
     def _on_paid(self):
         self._load_data()
-
-    # ── SESSION VIEW ─────────────────────────────────────────────
 
     def _show_active_session(self):
         self._clear_content()
@@ -3037,8 +3115,6 @@ class CustomerDashboard(tk.Frame):
         self._ticking = True
         self._tick()
 
-    # ── PAUSE ────────────────────────────────────────────────────
-
     def _do_pause(self):
         if not self.active_session:
             return
@@ -3049,7 +3125,6 @@ class CustomerDashboard(tk.Frame):
         remain_ms = max(0, (start_ms + total_min * 60_000) - now_ms())
         ts        = now_ms()
 
-        # Save pause state — real timestamps
         db_exec(
             "UPDATE sessions "
             "SET status='paused', paused_at=%s, paused_remain=%s "
@@ -3076,8 +3151,6 @@ class CustomerDashboard(tk.Frame):
 
         self._load_data()
 
-    # ── RESUME ───────────────────────────────────────────────────
-
     def _resume_session(self):
         if not self.paused_session:
             return
@@ -3085,19 +3158,17 @@ class CustomerDashboard(tk.Frame):
         sess      = self.paused_session
         remain_ms = sess.get("pausedRemain") or 0
 
-        computers = db_exec("SELECT * FROM computers", fetch=True) or []
-        available = [c for c in computers if c["status"] == "available"]
-        if not available:
-            ThemedDialog(self.app, kind="warning",
-                         title="No Computers Available",
-                         message="All PCs are occupied. Please try again shortly.")
-            return
+        computer = self._get_this_pc()
+        if computer is None or computer["status"] != "available":
+            computers = db_exec("SELECT * FROM computers", fetch=True) or []
+            available = [c for c in computers if c["status"] == "available"]
+            if not available:
+                ThemedDialog(self.app, kind="warning",
+                             title="No Computers Available",
+                             message="All PCs are occupied. Please try again shortly.")
+                return
+            computer = available[0]
 
-        preferred = next((c for c in available
-                          if c["id"] == sess.get("computerId")), None)
-        computer  = preferred or available[0]
-
-        # Back-date start_time so remaining time is correct
         new_start_ms   = now_ms() - (sess["duration"] * 60_000 - remain_ms)
         new_remain_min = max(1, int(remain_ms / 60_000))
 
@@ -3119,8 +3190,6 @@ class CustomerDashboard(tk.Frame):
         self._view_mode       = None
         self._load_data()
 
-    # ── ADD TIME ─────────────────────────────────────────────────
-
     def _open_add_time(self, computer):
         if not self.active_session:
             return
@@ -3134,8 +3203,6 @@ class CustomerDashboard(tk.Frame):
                 self.active_session = norm_session(rows[0])
 
         AddTimeDialog(self.app, self.active_session, computer, _done)
-
-    # ── TICK ─────────────────────────────────────────────────────
 
     def _tick(self):
         if not self._ticking or not self.active_session:
@@ -3182,12 +3249,10 @@ class CustomerDashboard(tk.Frame):
 
         self.after(1000, self._tick)
 
-    # ── END SESSION ──────────────────────────────────────────────
-
     def _end_session(self):
         if not self.active_session:
             return
-        ts = now_ms()   # real end timestamp
+        ts = now_ms()
         db_exec(
             "UPDATE sessions SET status='completed', end_time=%s WHERE id=%s",
             (ts, self.active_session["id"]))
@@ -3210,8 +3275,6 @@ class CustomerDashboard(tk.Frame):
             pass
         self._load_data()
 
-    # ── FORCE LOAD ───────────────────────────────────────────────
-
     def _force_load_session(self):
         if not Auth.user:
             return
@@ -3227,14 +3290,11 @@ class CustomerDashboard(tk.Frame):
         self._view_mode       = "active"
         self._show_active_session()
 
-    # ── POLL / LOAD DATA ─────────────────────────────────────────
-
     def _load_data(self):
         if not Auth.user:
             return
         uname = Auth.username()
 
-        # ── 1. Active session? ──
         rows   = db_exec(
             "SELECT * FROM sessions WHERE username=%s AND status='active'",
             (uname,), fetch=True)
@@ -3253,7 +3313,6 @@ class CustomerDashboard(tk.Frame):
             self._show_active_session()
             return
 
-        # ── 2. Paused session? ──
         paused_rows = db_exec(
             "SELECT * FROM sessions WHERE username=%s AND status='paused'",
             (uname,), fetch=True)
@@ -3283,11 +3342,10 @@ class CustomerDashboard(tk.Frame):
             self._show_paused_session()
             return
 
-        # ── 3. No active / paused — booking ──
-        computers = db_exec("SELECT * FROM computers", fetch=True) or []
-        available = [c for c in computers if c["status"] == "available"]
-        new_state = (len(available),
-                     available[0]["id"] if available else None)
+        computer  = self._get_this_pc()
+        pc_status = computer["status"] if computer else "not_found"
+        pc_id     = computer["id"]     if computer else THIS_COMPUTER_ID
+        new_state = (pc_status, pc_id)
 
         if self._view_mode == "active":
             try:
@@ -3310,12 +3368,20 @@ class CustomerDashboard(tk.Frame):
         self._last_session_id    = None
         self._last_booking_state = new_state
 
-        if not available:
+        if computer is None or pc_status != "available":
             self._view_mode = "no_computers"
             self._clear_content()
-            self._show_no_computers()
+            if computer is None:
+                self._show_no_computers(
+                    title="Computer Not Found",
+                    body=f"Kiosk ID '{THIS_COMPUTER_ID}' is not in the system.\n"
+                         f"Please contact staff.")
+            else:
+                self._show_no_computers(
+                    title=f"{computer['name']} is Unavailable",
+                    body=f"Status: {pc_status}.\nPlease wait or contact staff.")
         else:
-            self.assigned_computer = available[0]
+            self.assigned_computer = computer
             self._view_mode        = "booking"
             self.selected_tier     = None
             self._show_booking()
