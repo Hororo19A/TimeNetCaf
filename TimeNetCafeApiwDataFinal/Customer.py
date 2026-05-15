@@ -14,7 +14,6 @@ import requests
 import mysql.connector
 from mysql.connector import pooling
 
-
 # ════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ════════════════════════════════════════════════════════════════════
@@ -27,7 +26,7 @@ DB_CONFIG = {
     "database": "timenet",
 }
 
-THIS_COMPUTER_ID = "pc-02"
+THIS_COMPUTER_ID = "pc-01"
 
 PAYMONGO_SECRET_KEY = "sk_test_knuivMbT2mfYaub4f6oDNh5y"
 PAYMONGO_PUBLIC_KEY = "pk_test_78P7sdJ2p33LmgwFLnrsTHQB"
@@ -53,6 +52,14 @@ PRICING_TIERS = [
     {"label": "8 hours", "minutes": 480},
 ]
 
+# ════════════════════════════════════════════════════════════════════
+#  ICON CONFIGURATION – Replace these PNG files with your own images
+# ════════════════════════════════════════════════════════════════════
+
+# Paths to custom PNG icons (leave empty to use fallback emoji/drawn icons)
+TIMENET_ICON_PATH = "timenet.png"   # Main app icon (used in window and tray)
+GCASH_ICON_PATH   = "gcash.png"     # GCash payment method icon
+MAYA_ICON_PATH    = "maya.png"      # Maya payment method icon
 
 # ════════════════════════════════════════════════════════════════════
 #  DESIGN TOKENS
@@ -91,6 +98,37 @@ FD        = "Segoe UI"
 FB        = "Segoe UI"
 FM        = "Consolas"
 
+# ════════════════════════════════════════════════════════════════════
+#  UTILITIES FOR PNG ICONS
+# ════════════════════════════════════════════════════════════════════
+
+_icon_cache = {}
+
+def load_icon_image(path, size=(32, 32), fallback_text=None):
+    if not path:
+        return None
+    cache_key = (path, size)
+    if cache_key in _icon_cache:
+        return _icon_cache[cache_key]
+    try:
+        from PIL import Image, ImageTk
+        if os.path.exists(path):
+            img = Image.open(path)
+            img = img.resize(size, Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            _icon_cache[cache_key] = photo
+            return photo
+    except Exception as e:
+        print(f"[Icon] Failed to load {path}: {e}")
+    return None
+
+def get_method_icon(method, size=(32, 32)):
+    method_lower = method.lower()
+    if method_lower == "gcash":
+        return load_icon_image(GCASH_ICON_PATH, size)
+    elif method_lower == "maya":
+        return load_icon_image(MAYA_ICON_PATH, size)
+    return None
 
 # ════════════════════════════════════════════════════════════════════
 #  DATABASE
@@ -98,14 +136,12 @@ FM        = "Consolas"
 
 _pool = None
 
-
 def get_pool():
     global _pool
     if _pool is None:
         _pool = pooling.MySQLConnectionPool(
             pool_name="timenet_customer", pool_size=5, **DB_CONFIG)
     return _pool
-
 
 def db_exec(query, params=(), fetch=False):
     conn = None
@@ -129,7 +165,6 @@ def db_exec(query, params=(), fetch=False):
                 pass
         return [] if fetch else None
 
-
 def _dt_to_ms(val):
     """Convert a DB DATETIME value to epoch-milliseconds (int)."""
     if val is None:
@@ -143,7 +178,6 @@ def _dt_to_ms(val):
             except ValueError:
                 continue
     return None
-
 
 def fmt_datetime_display(val):
     """Format a DATETIME value as 'Month DD, YYYY  HH:MM:SS AM/PM'."""
@@ -159,7 +193,6 @@ def fmt_datetime_display(val):
                 continue
     return "—"
 
-
 def fmt_datetime_payment(val):
     """Format a DATETIME value as 'MM-DD-YYYY  HH:MM:SS AM/PM'."""
     if val is None:
@@ -174,19 +207,10 @@ def fmt_datetime_payment(val):
                 continue
     return "—"
 
-
 def fmt_sec_to_hms(total_seconds):
     """
     Convert total seconds (int/float) to HH:MM:SS string.
-
     This is the canonical display format for paused_remain.
-    It matches what MySQL stores in the TIME column and what
-    v_paused_sessions.remaining_time returns.
-
-    Examples:
-      5025  →  '01:23:45'
-      83    →  '00:01:23'
-      3600  →  '01:00:00'
     """
     total_seconds = max(0, int(total_seconds))
     h = total_seconds // 3600
@@ -194,44 +218,18 @@ def fmt_sec_to_hms(total_seconds):
     s = total_seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 
-
 def fmt_sec_to_display(total_seconds):
-    """
-    Format seconds as a human-friendly string matching
-    v_paused_sessions.remaining_display: '1h 23m 45s'.
-
-    This avoids the old decimal-minutes confusion entirely.
-
-    Examples:
-      5025  →  '1h 23m 45s'
-      83    →  '0h 1m 23s'
-      3600  →  '1h 0m 0s'
-    """
     total_seconds = max(0, int(total_seconds))
     h = total_seconds // 3600
     m = (total_seconds % 3600) // 60
     s = total_seconds % 60
     return f"{h}h {m}m {s}s"
 
-
 def parse_time_to_seconds(val):
-    """
-    Parse a MySQL TIME value into total seconds (int).
-
-    MySQL connector returns TIME columns as datetime.timedelta objects.
-    We also handle plain 'HH:MM:SS' strings for safety.
-
-    This is the single authoritative conversion used by norm_session().
-    The result feeds all time arithmetic — never use raw minutes floats.
-
-    Returns 0 on any parse failure.
-    """
     if val is None:
         return 0
-    # MySQL connector returns TIME as timedelta — most common path
     if isinstance(val, timedelta):
         return max(0, int(val.total_seconds()))
-    # String fallback: 'HH:MM:SS'
     if isinstance(val, str):
         parts = val.strip().split(":")
         if len(parts) == 3:
@@ -242,20 +240,9 @@ def parse_time_to_seconds(val):
                 pass
     return 0
 
-
 def norm_session(r):
     """
     Normalise a raw DB row into the internal session dict.
-
-    paused_remain in the DB is a TIME column (HH:MM:SS).
-    MySQL connector returns TIME as datetime.timedelta.
-
-    Stored fields:
-      pausedRemain     → int seconds  (used in all time arithmetic)
-      pausedRemainDisp → 'HH:MM:SS'   (matches v_paused_sessions.remaining_time)
-      pausedRemainHuman→ '1h 23m 45s' (matches v_paused_sessions.remaining_display)
-
-    NOTE: Do NOT store or use decimal minutes — that was the bug.
     """
     raw_remain = r.get("paused_remain") or r.get("pausedRemain")
     remain_sec = parse_time_to_seconds(raw_remain)
@@ -271,22 +258,13 @@ def norm_session(r):
         "endTime":           _dt_to_ms(r.get("end_time")    or r.get("endTime")),
         "pausedAt":          _dt_to_ms(r.get("paused_at")   or r.get("pausedAt")),
         "voucherCode":       r.get("voucher_code") or r.get("voucherCode"),
-
-        # Canonical int seconds — used everywhere in time arithmetic
         "pausedRemain":      remain_sec,
-
-        # Display strings
         "startTimeDisp":     fmt_datetime_display(r.get("start_time")  or r.get("startTime")),
         "endTimeDisp":       fmt_datetime_display(r.get("end_time")    or r.get("endTime")),
         "pausedAtDisp":      fmt_datetime_display(r.get("paused_at")   or r.get("pausedAt")),
-
-        # 'HH:MM:SS' — matches v_paused_sessions.remaining_time exactly
         "pausedRemainDisp":  fmt_sec_to_hms(remain_sec),
-
-        # '1h 23m 45s' — matches v_paused_sessions.remaining_display exactly
         "pausedRemainHuman": fmt_sec_to_display(remain_sec),
     }
-
 
 # ════════════════════════════════════════════════════════════════════
 #  UTILITIES
@@ -295,40 +273,32 @@ def norm_session(r):
 def now_ms():
     return int(time.time() * 1000)
 
-
 def now_dt_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
 def fmt_currency(amount):
     return f"₱{amount:,.2f}"
-
 
 def gen_session_id(username):
     ts = datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
     return f"ses-{username}-{ts}"
 
-
 def gen_payment_id(username):
     ts = datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
     return f"pay-{username}-{ts}"
 
-
 def gen_receipt():
     ts = datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
     return f"RN-{ts}"
-
 
 def gen_voucher():
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     code  = "".join(random.choices(chars, k=8))
     return f"TNV-{code}"
 
-
 def calc_cost(minutes):
     raw = minutes * MINUTE_RATE
     return max(round(raw * 100) / 100, PAYMONGO_MIN_PHP)
-
 
 def paymongo_headers():
     token = base64.b64encode(f"{PAYMONGO_SECRET_KEY}:".encode()).decode()
@@ -338,13 +308,11 @@ def paymongo_headers():
         "Accept":        "application/json",
     }
 
-
 def get_this_computer():
     rows = db_exec(
         "SELECT * FROM computers WHERE id=%s",
         (THIS_COMPUTER_ID,), fetch=True)
     return rows[0] if rows else None
-
 
 def find_browser():
     system = platform.system()
@@ -368,8 +336,13 @@ def find_browser():
                 return f
     return None
 
-
 def make_timenet_icon_image():
+    """Create a PhotoImage for the TimeNet icon. Uses external PNG if available."""
+    # Try to load external PNG first
+    png_img = load_icon_image(TIMENET_ICON_PATH, size=(64, 64))
+    if png_img:
+        return png_img
+    # Fallback: draw the original gradient icon
     try:
         from PIL import Image, ImageDraw, ImageFont
         size = 64
@@ -395,17 +368,16 @@ def make_timenet_icon_image():
             font = ImageFont.load_default()
         draw.text((32, 51), "TN", fill=(168, 85, 247, 220),
                   font=font, anchor="mm")
-        return img
+        from PIL import ImageTk
+        return ImageTk.PhotoImage(img)
     except Exception:
         return None
-
 
 # ════════════════════════════════════════════════════════════════════
 #  TRAY
 # ════════════════════════════════════════════════════════════════════
 
 _tray_icon = None
-
 
 def start_tray(on_restore):
     global _tray_icon
@@ -428,7 +400,6 @@ def start_tray(on_restore):
     _tray_icon = icon
     threading.Thread(target=icon.run, daemon=True).start()
 
-
 def stop_tray():
     global _tray_icon
     if _tray_icon:
@@ -437,7 +408,6 @@ def stop_tray():
         except Exception:
             pass
         _tray_icon = None
-
 
 # ════════════════════════════════════════════════════════════════════
 #  GRADIENT HELPERS
@@ -450,7 +420,6 @@ def _lerp_color(c1, c2, t):
     g = max(0, min(255, int(g1 + (g2-g1)*t)))
     b = max(0, min(255, int(b1 + (b2-b1)*t)))
     return f"#{r:02x}{g:02x}{b:02x}"
-
 
 def draw_gradient_h(canvas, width, height, c1, c2, steps=80):
     canvas.delete("all")
@@ -465,7 +434,6 @@ def draw_gradient_h(canvas, width, height, c1, c2, steps=80):
     canvas.create_rectangle(steps*sw, 0, width, height,
                              fill=_lerp_color(c1, c2, 1.0), outline="")
 
-
 def draw_gradient_v(canvas, width, height, c1, c2, steps=60):
     canvas.delete("all")
     if height < 2:
@@ -479,7 +447,6 @@ def draw_gradient_v(canvas, width, height, c1, c2, steps=60):
     canvas.create_rectangle(0, steps*sh, width, height,
                              fill=_lerp_color(c1, c2, 1.0), outline="")
 
-
 # ════════════════════════════════════════════════════════════════════
 #  UI PRIMITIVES
 # ════════════════════════════════════════════════════════════════════
@@ -487,10 +454,8 @@ def draw_gradient_v(canvas, width, height, c1, c2, steps=60):
 def hsep(parent, color=BORDER2, h=1):
     return tk.Frame(parent, bg=color, height=h)
 
-
 def accent_bar(parent, color=PURPLE, h=3):
     return tk.Frame(parent, bg=color, height=h)
-
 
 def make_gradient_canvas_h(parent, height=4, c1=PURPLE, c2=CYAN):
     c = tk.Canvas(parent, bg=BG2, height=height, highlightthickness=0)
@@ -518,7 +483,6 @@ def make_gradient_canvas_h(parent, height=4, c1=PURPLE, c2=CYAN):
     c.after(20, _poll)
     return c
 
-
 def dot_grid(canvas, event, color=TEXT4, spacing=36):
     canvas.delete("dots")
     for x in range(0, event.width, spacing):
@@ -526,13 +490,11 @@ def dot_grid(canvas, event, color=TEXT4, spacing=36):
             canvas.create_oval(x-1, y-1, x+1, y+1,
                                fill=color, outline="", tags="dots")
 
-
 def make_bg_canvas(parent):
     c = tk.Canvas(parent, bg=BG, highlightthickness=0)
     c.place(relwidth=1, relheight=1)
     c.bind("<Configure>", lambda e: dot_grid(c, e))
     return c
-
 
 def ghost_button(parent, text, command, color=TEXT2, pady=12):
     return tk.Button(parent, text=text, command=command,
@@ -540,7 +502,6 @@ def ghost_button(parent, text, command, color=TEXT2, pady=12):
                      relief="flat", cursor="hand2",
                      activebackground=BG5, activeforeground=TEXT,
                      padx=16, pady=pady)
-
 
 # ════════════════════════════════════════════════════════════════════
 #  GRADIENT BORDER
@@ -583,7 +544,6 @@ def add_gradient_border(dialog, thickness=3, c1=PURPLE, c2=CYAN):
     lft.place(x=0, y=0, relheight=1)
     rgt = _make_v(dialog, flip=True)
     rgt.place(relx=1.0, y=0, anchor="ne", relheight=1)
-
 
 # ════════════════════════════════════════════════════════════════════
 #  THEMED DIALOG
@@ -660,7 +620,6 @@ class ThemedDialog(tk.Toplevel):
         if self._on_close:
             self._on_close()
 
-
 # ════════════════════════════════════════════════════════════════════
 #  ADMIN PIN DIALOG
 # ════════════════════════════════════════════════════════════════════
@@ -720,7 +679,6 @@ class AdminPinDialog(tk.Toplevel):
         else:
             self.err.config(text="✗  Incorrect PIN — please try again.")
             self.pin_var.set("")
-
 
 # ════════════════════════════════════════════════════════════════════
 #  CASH VOUCHER WAITING DIALOG
@@ -868,9 +826,8 @@ class CashVoucherDialog(tk.Toplevel):
         elif not activated and self.on_cancel:
             self.on_cancel()
 
-
 # ════════════════════════════════════════════════════════════════════
-#  PAYMENT WAITING SCREEN  (GCash / Maya)
+#  PAYMENT WAITING SCREEN (GCash / Maya)
 # ════════════════════════════════════════════════════════════════════
 
 class PaymentWaitingScreen:
@@ -892,6 +849,7 @@ class PaymentWaitingScreen:
         self._overlay     = None
         self._tmp_dir     = None
         self._browser_path= find_browser()
+        self._method_icon = get_method_icon(method, size=(28, 28))
         self._start_watcher()
         if self._browser_path:
             self._launch_browser()
@@ -936,8 +894,14 @@ class PaymentWaitingScreen:
 
     def _build_top_bar(self):
         sw = self.app.winfo_screenwidth()
-        colors = {"GCASH": ("#00B4D8", "📱"), "MAYA": (PURPLE, "💜")}
-        color, icon = colors.get(self.method, (CYAN, "💳"))
+        # Determine colors and fallback text
+        if self.method == "GCASH":
+            color = "#00B4D8"
+            fallback_text = "📱"
+        else:  # MAYA
+            color = PURPLE
+            fallback_text = "💜"
+
         bar = tk.Toplevel(self.app)
         bar.configure(bg=BG2)
         bar.overrideredirect(True)
@@ -950,8 +914,13 @@ class PaymentWaitingScreen:
         inner.pack(fill="both", expand=True, padx=20)
         left = tk.Frame(inner, bg=BG2)
         left.pack(side="left", fill="y")
-        tk.Label(left, text=icon, bg=BG2, fg=color,
-                 font=(FD, 18)).pack(side="left", padx=(0, 10), pady=14)
+        # Icon: use PNG if available, else emoji
+        if self._method_icon:
+            icon_lbl = tk.Label(left, image=self._method_icon, bg=BG2)
+            icon_lbl.pack(side="left", padx=(0, 10), pady=14)
+        else:
+            tk.Label(left, text=fallback_text, bg=BG2, fg=color,
+                     font=(FD, 18)).pack(side="left", padx=(0, 10), pady=14)
         ic = tk.Frame(left, bg=BG2)
         ic.pack(side="left")
         tk.Label(ic, text=f"{self.method} Payment", bg=BG2, fg=color,
@@ -975,8 +944,12 @@ class PaymentWaitingScreen:
 
     def _build_overlay(self):
         sw, sh = self.app.winfo_screenwidth(), self.app.winfo_screenheight()
-        colors = {"GCASH": ("#00B4D8", "📱"), "MAYA": (PURPLE, "💜")}
-        color, icon = colors.get(self.method, (CYAN, "💳"))
+        if self.method == "GCASH":
+            color = "#00B4D8"
+            fallback_text = "📱"
+        else:
+            color = PURPLE
+            fallback_text = "💜"
         ov = tk.Toplevel(self.app)
         ov.configure(bg=BG)
         ov.overrideredirect(True)
@@ -990,8 +963,14 @@ class PaymentWaitingScreen:
         tk.Frame(bar, bg=color, width=4).pack(side="left", fill="y")
         lf = tk.Frame(bar, bg=BG2)
         lf.pack(side="left", padx=20, fill="y")
-        tk.Label(lf, text=f"{icon}  {self.method} Payment",
-                 bg=BG2, fg=color, font=(FD, 14, "bold")).pack(side="left", pady=20)
+        if self._method_icon:
+            icon_lbl = tk.Label(lf, image=self._method_icon, bg=BG2)
+            icon_lbl.pack(side="left", pady=20)
+            tk.Label(lf, text=f"  {self.method} Payment",
+                     bg=BG2, fg=color, font=(FD, 14, "bold")).pack(side="left")
+        else:
+            tk.Label(lf, text=f"{fallback_text}  {self.method} Payment",
+                     bg=BG2, fg=color, font=(FD, 14, "bold")).pack(side="left", pady=20)
         tk.Label(lf, text=f"   {fmt_currency(self.amount)}",
                  bg=BG2, fg=GREEN, font=(FD, 13, "bold")).pack(side="left")
         rf = tk.Frame(bar, bg=BG2)
@@ -1009,8 +988,19 @@ class PaymentWaitingScreen:
         body.pack(fill="both", expand=True)
         centre = tk.Frame(body, bg=BG)
         centre.place(relx=0.5, rely=0.5, anchor="center")
-        tk.Label(centre, text=icon, bg=BG, fg=color,
-                 font=(FD, 72)).pack(pady=(0, 12))
+        # Big icon in centre
+        if self._method_icon:
+            big_icon = get_method_icon(self.method, size=(72, 72))
+            if big_icon:
+                tk.Label(centre, image=big_icon, bg=BG).pack(pady=(0, 12))
+                # keep reference
+                centre.big_icon = big_icon
+            else:
+                tk.Label(centre, text=fallback_text, bg=BG, fg=color,
+                         font=(FD, 72)).pack(pady=(0, 12))
+        else:
+            tk.Label(centre, text=fallback_text, bg=BG, fg=color,
+                     font=(FD, 72)).pack(pady=(0, 12))
         tk.Label(centre, text=f"Pay {fmt_currency(self.amount)} via {self.method}",
                  bg=BG, fg=TEXT, font=(FD, 20, "bold")).pack(pady=(0, 6))
         tk.Label(centre, text="No browser found — scan or open the link below.",
@@ -1099,7 +1089,6 @@ class PaymentWaitingScreen:
             except Exception:
                 pass
             self._overlay = None
-
 
 # ════════════════════════════════════════════════════════════════════
 #  PAYMONGO API
@@ -1251,10 +1240,8 @@ class PayMongoAPI:
                         info_copy = dict(info)
                         self.app.after(0, lambda i=info_copy: self.activate(i))
 
-
 paymongo = PayMongoAPI()
 paymongo.start_polling()
-
 
 # ════════════════════════════════════════════════════════════════════
 #  AUTH
@@ -1274,7 +1261,6 @@ class Auth:
     @classmethod
     def username(cls):
         return cls.user["username"] if cls.user else ""
-
 
 # ════════════════════════════════════════════════════════════════════
 #  MAIN APP WINDOW
@@ -1309,18 +1295,14 @@ class App(tk.Tk):
         try:
             from PIL import ImageTk
             img   = make_timenet_icon_image()
-            photo = ImageTk.PhotoImage(img)
-            win.iconphoto(True, photo)
-            if win is self:
-                self._icon_photo = photo
-            else:
-                win._icon_photo = photo
+            if img:
+                win.iconphoto(True, img)
+                if win is self:
+                    self._icon_photo = img
+                else:
+                    win._icon_photo = img
         except Exception as e:
             print(f"[Icon] {e}")
-
-    def _on_payment_success(self, info):
-        if isinstance(self.current_frame, CustomerDashboard):
-            self.current_frame._force_load_session()
 
     @staticmethod
     def _set_taskbar(visible):
@@ -1695,6 +1677,9 @@ class App(tk.Tk):
             self._set_taskbar(False)
         self.show_login()
 
+    def _on_payment_success(self, info):
+        if isinstance(self.current_frame, CustomerDashboard):
+            self.current_frame._force_load_session()
 
 # ════════════════════════════════════════════════════════════════════
 #  LOGIN PAGE
@@ -1821,7 +1806,6 @@ class LoginPage(tk.Frame):
         else:
             self._show_msg("✗  Invalid username or password.")
 
-
 # ════════════════════════════════════════════════════════════════════
 #  RECAPTCHA HTML
 # ════════════════════════════════════════════════════════════════════
@@ -1921,7 +1905,6 @@ _RECAPTCHA_HTML = """\
 </html>
 """
 
-
 def verify_recaptcha(token):
     if RECAPTCHA_SECRET_KEY == "YOUR_SECRET_KEY_HERE":
         return True
@@ -1933,7 +1916,6 @@ def verify_recaptcha(token):
         return r.json().get("success", False)
     except Exception:
         return False
-
 
 # ════════════════════════════════════════════════════════════════════
 #  RECAPTCHA WAITING SCREEN
@@ -2214,7 +2196,6 @@ class RecaptchaWaitingScreen:
                 except Exception:
                     pass
 
-
 # ════════════════════════════════════════════════════════════════════
 #  REGISTER PAGE
 # ════════════════════════════════════════════════════════════════════
@@ -2412,7 +2393,6 @@ class RegisterPage(tk.Frame):
 
         threading.Thread(target=_finish, daemon=True).start()
 
-
 # ════════════════════════════════════════════════════════════════════
 #  ADD TIME DIALOG
 # ════════════════════════════════════════════════════════════════════
@@ -2513,8 +2493,19 @@ class AddTimeDialog(tk.Toplevel):
             outer_card.grid(row=0, column=ci, padx=4, pady=4, sticky="nsew")
             inner_card = tk.Frame(outer_card, bg=BG4 if is_sel else BG3)
             inner_card.pack(fill="both", expand=True, padx=2, pady=2)
-            il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
-                          fg=color, font=(FD, 18))
+            # Use PNG icon for GCash/Maya if available
+            if val in ("gcash", "maya"):
+                png_icon = get_method_icon(val, size=(28, 28))
+                if png_icon:
+                    il = tk.Label(inner_card, image=png_icon, bg=inner_card["bg"])
+                    # Keep reference
+                    inner_card._icon_ref = png_icon
+                else:
+                    il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                                  fg=color, font=(FD, 18))
+            else:
+                il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                              fg=color, font=(FD, 18))
             il.pack(pady=(10, 2))
             nl = tk.Label(inner_card, text=lbl_txt, bg=inner_card["bg"],
                           fg=TEXT, font=(FB, 9, "bold"))
@@ -2677,7 +2668,6 @@ class AddTimeDialog(tk.Toplevel):
         PaymentWaitingScreen(self.app, lid, url, method, cost,
                              _paid, lambda: None)
 
-
 # ════════════════════════════════════════════════════════════════════
 #  PAYMENT DIALOG
 # ════════════════════════════════════════════════════════════════════
@@ -2753,8 +2743,18 @@ class PaymentDialog(tk.Toplevel):
             outer_card.grid(row=0, column=ci, padx=5, pady=4, sticky="nsew")
             inner_card = tk.Frame(outer_card, bg=BG4 if is_sel else BG3)
             inner_card.pack(fill="both", expand=True, padx=2, pady=2)
-            il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
-                          fg=color, font=(FD, 22))
+            # Use PNG icon for GCash/Maya if available
+            if val in ("gcash", "maya"):
+                png_icon = get_method_icon(val, size=(32, 32))
+                if png_icon:
+                    il = tk.Label(inner_card, image=png_icon, bg=inner_card["bg"])
+                    inner_card._icon_ref = png_icon
+                else:
+                    il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                                  fg=color, font=(FD, 22))
+            else:
+                il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                              fg=color, font=(FD, 22))
             il.pack(pady=(14, 2))
             nl = tk.Label(inner_card, text=lbl_txt, bg=inner_card["bg"],
                           fg=TEXT, font=(FB, 11, "bold"))
@@ -2934,7 +2934,6 @@ class PaymentDialog(tk.Toplevel):
         PaymentWaitingScreen(self.app, lid, url, method,
                              self.cost, _paid, _cancelled)
 
-
 # ════════════════════════════════════════════════════════════════════
 #  CUSTOMER DASHBOARD
 # ════════════════════════════════════════════════════════════════════
@@ -3107,28 +3106,12 @@ class CustomerDashboard(tk.Frame):
                  font=(FB, 11), justify="center").pack(pady=8)
 
     def _show_paused_session(self):
-        """
-        Display the paused session screen.
-
-        Key fields from norm_session():
-          pausedRemain      → int seconds  (time arithmetic)
-          pausedRemainDisp  → 'HH:MM:SS'   (matches v_paused_sessions.remaining_time)
-          pausedRemainHuman → '1h 23m 45s' (matches v_paused_sessions.remaining_display)
-
-        We show pausedRemainDisp (HH:MM:SS) as the main countdown
-        and pausedRemainHuman as a sub-label so users see both formats.
-
-        This replaces the old decimal-minutes display that showed
-        misleading values like '83.75' which looked like '83 min 75 sec'.
-        """
         self._clear_content()
         self._view_mode = "paused"
         sess = self.paused_session
 
-        # 'HH:MM:SS' — primary display, matches v_paused_sessions.remaining_time
         remain_hms   = sess.get("pausedRemainDisp") or fmt_sec_to_hms(
             sess.get("pausedRemain", 0))
-        # '1h 23m 45s' — friendly display, matches v_paused_sessions.remaining_display
         remain_human = sess.get("pausedRemainHuman") or fmt_sec_to_display(
             sess.get("pausedRemain", 0))
         paused_at_str = sess.get("pausedAtDisp", "—")
@@ -3164,11 +3147,8 @@ class CustomerDashboard(tk.Frame):
         tk.Label(tr, text="TIME REMAINING", fg=TEXT3, bg=BG3,
                  font=(FB, 9, "bold")).pack(pady=(18, 4))
 
-        # Primary: HH:MM:SS — unambiguous, matches v_paused_sessions.remaining_time
         tk.Label(tr, text=remain_hms, fg=ORANGE, bg=BG3,
                  font=(FM, 40, "bold")).pack()
-
-        # Secondary: friendly breakdown — matches v_paused_sessions.remaining_display
         tk.Label(tr, text=remain_human, fg=TEXT2, bg=BG3,
                  font=(FB, 11)).pack(pady=(2, 0))
 
@@ -3379,19 +3359,6 @@ class CustomerDashboard(tk.Frame):
         self._tick(my_gen)
 
     def _do_pause(self):
-        """
-        Pause the active session.
-
-        Calculates remaining seconds from the live countdown and stores as
-        TIME 'HH:MM:SS' in the DB — unambiguous, no decimal confusion.
-
-        Math:
-          remain_ms  = (start_ms + duration_ms) - now_ms
-          remain_sec = remain_ms // 1000
-          remain_hms = fmt_sec_to_hms(remain_sec)  →  'HH:MM:SS'
-
-        On resume, parse_time_to_seconds() reads it back as clean int seconds.
-        """
         if not self.active_session:
             return
 
@@ -3399,10 +3366,8 @@ class CustomerDashboard(tk.Frame):
         total_min = sess.get("duration", 0)
         start_ms  = sess.get("startTime") or now_ms()
 
-        # Remaining time as integer seconds — no floats, no decimals
         remain_ms  = max(0, (start_ms + total_min * 60_000) - now_ms())
         remain_sec = remain_ms // 1000
-        # 'HH:MM:SS' for MySQL TIME column
         remain_hms = fmt_sec_to_hms(remain_sec)
 
         dt_str = now_dt_str()
@@ -3435,30 +3400,12 @@ class CustomerDashboard(tk.Frame):
         self._load_data()
 
     def _resume_session(self):
-        """
-        Resume a paused session on an available PC.
-
-        pausedRemain is stored as int seconds (from parse_time_to_seconds
-        in norm_session, which reads the TIME 'HH:MM:SS' column cleanly).
-
-        To reconstruct a synthetic start_time so the countdown ticks from
-        remain_sec:
-          elapsed_sec   = duration_sec - remain_sec
-          new_start_ms  = now_ms() - elapsed_sec * 1000
-          new_start_dt  = formatted datetime string
-
-        The tick loop then computes:
-          end_ms  = new_start_ms + duration_ms
-                  = (now - elapsed_ms) + duration_ms
-                  = now + (duration_ms - elapsed_ms)
-                  = now + remain_ms          ✓
-        """
         if not self.paused_session:
             return
 
         sess       = self.paused_session
-        remain_sec = sess.get("pausedRemain", 0)   # clean int seconds
-        duration   = sess.get("duration", 0)        # original minutes
+        remain_sec = sess.get("pausedRemain", 0)
+        duration   = sess.get("duration", 0)
 
         computer = self._get_this_pc()
         if computer is None or computer["status"] != "available":
@@ -3471,7 +3418,6 @@ class CustomerDashboard(tk.Frame):
                 return
             computer = available[0]
 
-        # Synthetic start_time so countdown ticks from remain_sec
         duration_sec = duration * 60
         elapsed_sec  = max(0, duration_sec - remain_sec)
         new_start_ms = now_ms() - elapsed_sec * 1000
@@ -3749,7 +3695,6 @@ class CustomerDashboard(tk.Frame):
 
     def _logout(self):
         self.app.logout()
-
 
 # ════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
