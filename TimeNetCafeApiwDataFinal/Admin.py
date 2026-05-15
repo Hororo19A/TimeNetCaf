@@ -25,7 +25,7 @@ DB_CONFIG = {
 #  BUSINESS RULES
 # ════════════════════════════════════════════════════════════════════
 
-HOURLY_RATE    = 0.1
+HOURLY_RATE    = 1.0
 MINUTE_RATE    = HOURLY_RATE / 60
 ADMIN_EXIT_PIN = "1234"
 
@@ -917,7 +917,7 @@ class AdminDashboard(tk.Frame):
                         }
                 except Exception as e:
                     print(f"[BG fetch] {e}")
-                time.sleep(2)
+                time.sleep(1)  # fetch every 1 s for tighter real-time sync
         threading.Thread(target=_loop, daemon=True).start()
 
     def _get_data(self):
@@ -933,7 +933,7 @@ class AdminDashboard(tk.Frame):
     def _poll(self):
         if self._destroyed: return
         self._poll_once()
-        self.after(2000, self._poll)
+        self.after(1500, self._poll)  # poll every 1.5 s; BG fetch runs every 1 s
 
     def _poll_once(self):
         if self._destroyed: return
@@ -953,13 +953,15 @@ class AdminDashboard(tk.Frame):
             self._smart_refresh_users(data)
 
     # ── LIVE TICK (1-second countdown) ────────────────────────────
-    # FIX #5: paused sessions actually decrement their counter
+    # Active sessions: compute remaining time from DB end_dt (wall-clock accurate).
+    # Paused sessions: display the frozen paused_remain from DB — they do NOT tick
+    # down while paused; the DB value is authoritative and refreshed by _poll.
 
     def _tick_live(self):
         if self._destroyed: return
         now = datetime.now()
 
-        # Active sessions: compute from end_dt
+        # Active sessions: always compute from wall-clock end_dt (never drift)
         for cid, info in list(self._live_rows.items()):
             end_dt    = info.get("end_dt")
             total_sec = info.get("total_sec", 1)
@@ -977,11 +979,10 @@ class AdminDashboard(tk.Frame):
                     fg=RED if pct < 10 else YELLOW if pct < 20 else PURPLE)
             except: pass
 
-        # Paused sessions: decrement counter by 1 each tick
+        # Paused sessions: display the frozen remain_sec from DB — no local decrement.
+        # The DB value is kept fresh by the 2-second background fetch + _poll cycle.
         for sid, info in list(self._paused_rows.items()):
-            if info.get("remain_sec", 0) > 0:
-                info["remain_sec"] = max(0, info["remain_sec"] - 1)
-            remain_sec = info["remain_sec"]
+            remain_sec = info.get("remain_sec", 0)  # authoritative from DB, never mutated
             try:
                 info["time_lbl"].config(text=fmt_seconds_hms(remain_sec), fg=AMBER)
                 total_sec = info.get("total_sec", 1)
@@ -1085,7 +1086,9 @@ class AdminDashboard(tk.Frame):
         active = [s for s in sessions if s["status"] == "active"]
         paused = [s for s in sessions if s["status"] == "paused"]
 
-        h_live = str([(s["computer_id"], s.get("duration"), str(s.get("start_time")))
+        # Include start_time in the hash so that any add-time / resume rebuilds the row
+        h_live = str([(s["computer_id"], s.get("duration"),
+                       str(s.get("start_time")), str(s.get("end_time")))
                       for s in sorted(active, key=lambda x: x["computer_id"])])
         h_paused = str([(s["id"], s.get("paused_remain_sec"))
                         for s in sorted(paused, key=lambda x: x["id"])])
