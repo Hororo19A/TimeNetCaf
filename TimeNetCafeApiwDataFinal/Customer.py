@@ -3110,11 +3110,11 @@ class CustomerDashboard(tk.Frame):
         self._view_mode = "paused"
         sess = self.paused_session
 
-        remain_hms   = sess.get("pausedRemainDisp") or fmt_sec_to_hms(
-            sess.get("pausedRemain", 0))
-        remain_human = sess.get("pausedRemainHuman") or fmt_sec_to_display(
-            sess.get("pausedRemain", 0))
-        paused_at_str = sess.get("pausedAtDisp", "—")
+        # Snapshot remain_sec at the moment the screen is drawn.
+        # We tick it down locally (display-only); the DB value is the authority
+        # and will be re-read on resume.
+        remain_sec_init = int(sess.get("pausedRemain", 0))
+        paused_at_str   = sess.get("pausedAtDisp", "—")
 
         make_bg_canvas(self.content)
         wrap = tk.Frame(self.content, bg=BG)
@@ -3147,10 +3147,40 @@ class CustomerDashboard(tk.Frame):
         tk.Label(tr, text="TIME REMAINING", fg=TEXT3, bg=BG3,
                  font=(FB, 9, "bold")).pack(pady=(18, 4))
 
-        tk.Label(tr, text=remain_hms, fg=ORANGE, bg=BG3,
-                 font=(FM, 40, "bold")).pack()
-        tk.Label(tr, text=remain_human, fg=TEXT2, bg=BG3,
-                 font=(FB, 11)).pack(pady=(2, 0))
+        # Live countdown label — ticks every second using a local counter
+        self._paused_remain_sec = [remain_sec_init]  # mutable list so closure can write it
+        self._paused_tick_gen   = getattr(self, "_paused_tick_gen", 0) + 1
+        my_paused_gen           = self._paused_tick_gen
+
+        hms_lbl = tk.Label(tr, text=fmt_sec_to_hms(remain_sec_init),
+                            fg=ORANGE, bg=BG3, font=(FM, 40, "bold"))
+        hms_lbl.pack()
+        human_lbl = tk.Label(tr, text=fmt_sec_to_display(remain_sec_init),
+                             fg=TEXT2, bg=BG3, font=(FB, 11))
+        human_lbl.pack(pady=(2, 0))
+
+        def _tick_paused():
+            # Stop if the view has changed or widget was destroyed
+            if getattr(self, "_paused_tick_gen", 0) != my_paused_gen:
+                return
+            if self._view_mode != "paused":
+                return
+            try:
+                if not hms_lbl.winfo_exists():
+                    return
+            except Exception:
+                return
+            if self._paused_remain_sec[0] > 0:
+                self._paused_remain_sec[0] -= 1
+            sec = self._paused_remain_sec[0]
+            try:
+                hms_lbl.config(text=fmt_sec_to_hms(sec))
+                human_lbl.config(text=fmt_sec_to_display(sec))
+            except Exception:
+                return
+            self.after(1000, _tick_paused)
+
+        self.after(1000, _tick_paused)
 
         comp_rows = db_exec("SELECT * FROM computers WHERE id=%s",
                             (sess.get("computerId", ""),), fetch=True) or []
@@ -3472,20 +3502,32 @@ class CustomerDashboard(tk.Frame):
             self._ticking = False
             return
 
-        n = now_ms()
-        if n - self._db_refresh_time >= 5_000:
-            self._db_refresh_time = n
-            rows = db_exec(
-                "SELECT duration, start_time FROM sessions WHERE id=%s",
-                (self.active_session["id"],), fetch=True)
-            if rows:
-                new_dur   = int(rows[0]["duration"])
-                new_start = _dt_to_ms(rows[0]["start_time"])
-                if new_dur != self.active_session["duration"]:
-                    self.active_session["duration"] = new_dur
-                if new_start and new_start != self.active_session.get("startTime"):
-                    self.active_session["startTime"] = new_start
+        # ── Periodic DB refresh (background thread, no UI blocking) ──────────
+        now_ms_val = now_ms()
+        if now_ms_val - self._db_refresh_time >= 5_000:
+            self._db_refresh_time = now_ms_val
+            sess_id = self.active_session["id"]
 
+            def _refresh_db():
+                rows = db_exec(
+                    "SELECT duration, start_time FROM sessions WHERE id=%s",
+                    (sess_id,), fetch=True)
+                if rows:
+                    new_dur   = int(rows[0]["duration"])
+                    new_start = _dt_to_ms(rows[0]["start_time"])
+
+                    def _apply():
+                        if not self.active_session or self.active_session["id"] != sess_id:
+                            return
+                        if new_dur != self.active_session.get("duration"):
+                            self.active_session["duration"] = new_dur
+                        if new_start and new_start != self.active_session.get("startTime"):
+                            self.active_session["startTime"] = new_start
+                    self.after(0, _apply)
+
+            threading.Thread(target=_refresh_db, daemon=True).start()
+
+        # ── Wall-clock countdown using datetime (drift-free) ─────────────────
         total_min = self.active_session.get("duration", 60)
         start_ms  = self.active_session.get("startTime") or now_ms()
         end_ms    = start_ms + total_min * 60 * 1000
@@ -3690,8 +3732,148 @@ class CustomerDashboard(tk.Frame):
             self._show_booking()
 
     def _poll(self):
-        self._load_data()
+        """
+        Poll for session changes every 2 seconds.
+        DB queries run in a background thread; UI updates are posted back via after(0,...).
+        """
+        def _bg():
+            try:
+                uname = Auth.username() if Auth.user else None
+                if not uname:
+                    return
+                active_rows   = db_exec(
+                    "SELECT * FROM sessions WHERE username=%s AND status='active'",
+                    (uname,), fetch=True) or []
+                paused_rows   = db_exec(
+                    "SELECT * FROM sessions WHERE username=%s AND status='paused'",
+                    (uname,), fetch=True) or []
+                computer_rows = db_exec(
+                    "SELECT * FROM computers WHERE id=%s",
+                    (THIS_COMPUTER_ID,), fetch=True) or []
+                self.after(0, lambda ar=active_rows, pr=paused_rows, cr=computer_rows:
+                           self._apply_poll_result(ar, pr, cr))
+            except Exception as e:
+                print(f"[CustomerDashboard._poll] {e}")
+
+        threading.Thread(target=_bg, daemon=True).start()
         self.after(2000, self._poll)
+
+    def _apply_poll_result(self, active_rows, paused_rows, computer_rows):
+        """Apply poll results on the main Tkinter thread."""
+        if not Auth.user:
+            return
+
+        active   = norm_session(active_rows[0])   if active_rows   else None
+        paused   = norm_session(paused_rows[0])   if paused_rows   else None
+        computer = computer_rows[0]               if computer_rows else None
+
+        if active:
+            if (self._view_mode == "active"
+                    and self._last_session_id == active["id"]
+                    and self._ticking):
+                # Same session still running — refresh duration (handles add-time)
+                self.active_session["duration"] = active["duration"]
+                new_st = active.get("startTime")
+                if new_st and new_st != self.active_session.get("startTime"):
+                    self.active_session["startTime"] = new_st
+                return
+
+            self._ticking         = False
+            self._tick_gen       += 1
+            self._db_refresh_time = 0
+            self.active_session   = active
+            self.paused_session   = None
+            self._last_session_id = active["id"]
+            self._view_mode       = "active"
+            self._show_active_session()
+            return
+
+        if paused:
+            if self._view_mode == "active":
+                try:
+                    self.hdr.pack(fill="x", before=self.content)
+                    self.hdr_sep.pack(fill="x", before=self.content)
+                except Exception:
+                    self.hdr.pack(fill="x")
+                    self.hdr_sep.pack(fill="x")
+            try:
+                self.logout_btn.pack(side="right")
+                self.welcome_lbl.config(
+                    text=f"Welcome back, {Auth.username()}" if Auth.user else "")
+            except Exception:
+                pass
+
+            if (self._view_mode == "paused"
+                    and self.paused_session
+                    and self.paused_session["id"] == paused["id"]):
+                # Same paused session — nudge local tick to stay in sync with DB value
+                db_remain = paused.get("pausedRemain", 0)
+                if hasattr(self, "_paused_remain_sec") and self._paused_remain_sec:
+                    if db_remain < self._paused_remain_sec[0]:
+                        self._paused_remain_sec[0] = db_remain
+                return
+
+            self._ticking         = False
+            self._tick_gen       += 1
+            self._db_refresh_time = 0
+            self.active_session   = None
+            self.paused_session   = paused
+            self._last_session_id = paused["id"]
+            self._view_mode       = "paused"
+            self._show_paused_session()
+            return
+
+        pc_status = computer["status"] if computer else "not_found"
+        pc_id     = computer["id"]     if computer else THIS_COMPUTER_ID
+        new_state = (pc_status, pc_id)
+
+        if self._view_mode == "active":
+            self._ticking         = False
+            self._tick_gen       += 1
+            self._db_refresh_time = 0
+            try:
+                self.hdr.pack(fill="x", before=self.content)
+                self.hdr_sep.pack(fill="x", before=self.content)
+            except Exception:
+                self.hdr.pack(fill="x")
+                self.hdr_sep.pack(fill="x")
+
+        try:
+            self.logout_btn.pack(side="right")
+            self.welcome_lbl.config(
+                text=f"Welcome back, {Auth.username()}" if Auth.user else "")
+        except Exception:
+            pass
+
+        if (self._view_mode in ("booking", "no_computers")
+                and self._last_booking_state == new_state):
+            return
+
+        self._ticking            = False
+        self._tick_gen          += 1
+        self._db_refresh_time    = 0
+        self.active_session      = None
+        self.paused_session      = None
+        self._last_session_id    = None
+        self._last_booking_state = new_state
+
+        if computer is None or pc_status != "available":
+            self._view_mode = "no_computers"
+            self._clear_content()
+            if computer is None:
+                self._show_no_computers(
+                    title="Computer Not Found",
+                    body=f"Kiosk ID '{THIS_COMPUTER_ID}' is not in the system.\n"
+                         f"Please contact staff.")
+            else:
+                self._show_no_computers(
+                    title=f"{computer['name']} is Unavailable",
+                    body=f"Status: {pc_status}.\nPlease wait or contact staff.")
+        else:
+            self.assigned_computer = computer
+            self._view_mode        = "booking"
+            self.selected_tier     = None
+            self._show_booking()
 
     def _logout(self):
         self.app.logout()
