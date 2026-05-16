@@ -9,6 +9,108 @@ from datetime import datetime, timedelta
 import mysql.connector
 from mysql.connector import pooling
 
+
+# ════════════════════════════════════════════════════════════════════
+#  WINDOWS KIOSK KEY BLOCKER  (blocks Win key + exit combos only)
+#  All other keys — including all typing — pass through normally.
+# ════════════════════════════════════════════════════════════════════
+
+import platform
+import ctypes
+import ctypes.wintypes
+import threading as _threading
+
+_HOOK_HANDLE   = None
+_HOOK_CB_REF   = None
+_LOCKDOWN_ON   = False
+
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN     = 0x0100
+WM_SYSKEYDOWN  = 0x0104
+
+VK_LWIN   = 0x5B
+VK_RWIN   = 0x5C
+VK_TAB    = 0x09
+VK_F4     = 0x73
+VK_ESCAPE = 0x1B
+VK_DELETE = 0x2E
+VK_MENU   = 0x12   # Alt
+
+BLOCKED_KEYS   = {VK_LWIN, VK_RWIN}
+BLOCKED_COMBOS = [
+    (VK_F4,     True,  False),  # Alt+F4
+    (VK_TAB,    True,  False),  # Alt+Tab
+    (VK_ESCAPE, True,  False),  # Alt+Esc
+    (VK_ESCAPE, False, True),   # Ctrl+Esc
+    (VK_DELETE, False, True),   # Ctrl+Del (guard)
+]
+
+
+class _KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode",      ctypes.wintypes.DWORD),
+        ("scanCode",    ctypes.wintypes.DWORD),
+        ("flags",       ctypes.wintypes.DWORD),
+        ("time",        ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+def _keyboard_hook_proc(nCode, wParam, lParam):
+    if _LOCKDOWN_ON and nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+        kb  = ctypes.cast(lParam, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
+        vk  = kb.vkCode
+        alt = bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU) & 0x8000)
+        ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11)   & 0x8000)
+        if vk in BLOCKED_KEYS:
+            return 1
+        for (bvk, need_alt, need_ctrl) in BLOCKED_COMBOS:
+            if vk == bvk:
+                if need_alt  and not alt:   continue
+                if need_ctrl and not ctrl:  continue
+                if not need_alt  and alt:   continue
+                if not need_ctrl and ctrl:  continue
+                return 1
+    return ctypes.windll.user32.CallNextHookEx(_HOOK_HANDLE, nCode, wParam, lParam)
+
+
+def _install_kb_hook():
+    global _HOOK_HANDLE, _HOOK_CB_REF, _LOCKDOWN_ON
+    if platform.system() != "Windows":
+        return
+    try:
+        HOOKPROC     = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int,
+                                          ctypes.wintypes.WPARAM,
+                                          ctypes.wintypes.LPARAM)
+        _HOOK_CB_REF = HOOKPROC(_keyboard_hook_proc)
+        _HOOK_HANDLE = ctypes.windll.user32.SetWindowsHookExW(
+            WH_KEYBOARD_LL, _HOOK_CB_REF, None, 0)
+        _LOCKDOWN_ON = True
+
+        def _loop():
+            msg = ctypes.wintypes.MSG()
+            while True:
+                ret = ctypes.windll.user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret <= 0:
+                    break
+                ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
+                ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
+
+        _threading.Thread(target=_loop, daemon=True).start()
+    except Exception as e:
+        print(f"[Admin KbHook] {e}")
+
+
+def _uninstall_kb_hook():
+    global _HOOK_HANDLE, _LOCKDOWN_ON
+    _LOCKDOWN_ON = False
+    if _HOOK_HANDLE:
+        try:
+            ctypes.windll.user32.UnhookWindowsHookEx(_HOOK_HANDLE)
+        except Exception:
+            pass
+        _HOOK_HANDLE = None
+
 # ════════════════════════════════════════════════════════════════════
 #  DATABASE CONFIG
 # ════════════════════════════════════════════════════════════════════
@@ -614,6 +716,9 @@ class App(tk.Tk):
         self.container.pack(fill="both", expand=True)
         self.current_frame = None
         self.show_login()
+        # Install keyboard hook – blocks Win key / exit combos for kiosk safety
+        _install_kb_hook()
+
         self.bind_all("<Control-Shift-A>", lambda _: self._admin_exit())
         self.protocol("WM_DELETE_WINDOW", lambda: None)
 
@@ -632,7 +737,10 @@ class App(tk.Tk):
         self.after(500, lambda: self.attributes("-topmost", False))
 
     def _admin_exit(self):
-        AdminPinDialog(self, on_success=self.destroy)
+        def _do_exit():
+            _uninstall_kb_hook()
+            self.destroy()
+        AdminPinDialog(self, on_success=_do_exit)
 
     def _setup_ttk(self):
         s = ttk.Style(self)
@@ -917,7 +1025,7 @@ class AdminDashboard(tk.Frame):
                         }
                 except Exception as e:
                     print(f"[BG fetch] {e}")
-                time.sleep(1)  # fetch every 1 s for tighter real-time sync
+                time.sleep(2)
         threading.Thread(target=_loop, daemon=True).start()
 
     def _get_data(self):
@@ -933,7 +1041,7 @@ class AdminDashboard(tk.Frame):
     def _poll(self):
         if self._destroyed: return
         self._poll_once()
-        self.after(1500, self._poll)  # poll every 1.5 s; BG fetch runs every 1 s
+        self.after(2000, self._poll)
 
     def _poll_once(self):
         if self._destroyed: return
@@ -953,15 +1061,13 @@ class AdminDashboard(tk.Frame):
             self._smart_refresh_users(data)
 
     # ── LIVE TICK (1-second countdown) ────────────────────────────
-    # Active sessions: compute remaining time from DB end_dt (wall-clock accurate).
-    # Paused sessions: display the frozen paused_remain from DB — they do NOT tick
-    # down while paused; the DB value is authoritative and refreshed by _poll.
+    # FIX #5: paused sessions actually decrement their counter
 
     def _tick_live(self):
         if self._destroyed: return
         now = datetime.now()
 
-        # Active sessions: always compute from wall-clock end_dt (never drift)
+        # Active sessions: compute from end_dt
         for cid, info in list(self._live_rows.items()):
             end_dt    = info.get("end_dt")
             total_sec = info.get("total_sec", 1)
@@ -979,10 +1085,11 @@ class AdminDashboard(tk.Frame):
                     fg=RED if pct < 10 else YELLOW if pct < 20 else PURPLE)
             except: pass
 
-        # Paused sessions: display the frozen remain_sec from DB — no local decrement.
-        # The DB value is kept fresh by the 2-second background fetch + _poll cycle.
+        # Paused sessions: decrement counter by 1 each tick
         for sid, info in list(self._paused_rows.items()):
-            remain_sec = info.get("remain_sec", 0)  # authoritative from DB, never mutated
+            if info.get("remain_sec", 0) > 0:
+                info["remain_sec"] = max(0, info["remain_sec"] - 1)
+            remain_sec = info["remain_sec"]
             try:
                 info["time_lbl"].config(text=fmt_seconds_hms(remain_sec), fg=AMBER)
                 total_sec = info.get("total_sec", 1)
@@ -1086,9 +1193,7 @@ class AdminDashboard(tk.Frame):
         active = [s for s in sessions if s["status"] == "active"]
         paused = [s for s in sessions if s["status"] == "paused"]
 
-        # Include start_time in the hash so that any add-time / resume rebuilds the row
-        h_live = str([(s["computer_id"], s.get("duration"),
-                       str(s.get("start_time")), str(s.get("end_time")))
+        h_live = str([(s["computer_id"], s.get("duration"), str(s.get("start_time")))
                       for s in sorted(active, key=lambda x: x["computer_id"])])
         h_paused = str([(s["id"], s.get("paused_remain_sec"))
                         for s in sorted(paused, key=lambda x: x["id"])])

@@ -9,28 +9,39 @@ import threading
 import tempfile
 import base64
 import os
-import sys
-import ctypes
-import ctypes.wintypes
 from datetime import datetime, timedelta
 import requests
 import mysql.connector
 from mysql.connector import pooling
 
-
 # ════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ════════════════════════════════════════════════════════════════════
 
+# ── REMOTE / VPN SETUP ──────────────────────────────────────────────
+#  Set DB_HOST to the VPN/LAN IP of the PC running MySQL/XAMPP.
+#  e.g. "192.168.1.x"  or  "10.8.0.x"
+#  Leave as "localhost" ONLY if customer.py runs on the SAME machine
+#  as MySQL.
+# ────────────────────────────────────────────────────────────────────
+DB_HOST     = "localhost"   # ← change to VPN/LAN IP of MySQL server
+DB_PORT     = 3306
+DB_USER     = "root"
+DB_PASSWORD = ""
+DB_NAME     = "timenet"
+
 DB_CONFIG = {
-    "host":     "localhost",
-    "port":     3306,
-    "user":     "root",
-    "password": "",
-    "database": "timenet",
+    "host":               DB_HOST,
+    "port":               DB_PORT,
+    "user":               DB_USER,
+    "password":           DB_PASSWORD,
+    "database":           DB_NAME,
+    "connect_timeout":    8,   # prevents hanging on VPN dead TCP
+    "connection_timeout": 8,
+    "autocommit":         False,
 }
 
-THIS_COMPUTER_ID = "pc-02"
+THIS_COMPUTER_ID = "pc-01"
 
 PAYMONGO_SECRET_KEY = "sk_test_knuivMbT2mfYaub4f6oDNh5y"
 PAYMONGO_PUBLIC_KEY = "pk_test_78P7sdJ2p33LmgwFLnrsTHQB"
@@ -56,6 +67,13 @@ PRICING_TIERS = [
     {"label": "8 hours", "minutes": 480},
 ]
 
+# ════════════════════════════════════════════════════════════════════
+#  ICON CONFIGURATION
+# ════════════════════════════════════════════════════════════════════
+
+TIMENET_ICON_PATH = "timenet.png"
+GCASH_ICON_PATH   = "gcash.png"
+MAYA_ICON_PATH    = "maya.png"
 
 # ════════════════════════════════════════════════════════════════════
 #  DESIGN TOKENS
@@ -76,6 +94,7 @@ TEXT4     = "#253a55"
 AMBER     = "#f5a623"
 AMBER_DIM = "#2d1e00"
 CYAN      = "#00c8e8"
+CYAN2     = "#00a0bb"
 CYAN_DIM  = "#002d38"
 GREEN     = "#00e56e"
 GREEN2    = "#00b855"
@@ -94,183 +113,240 @@ FD        = "Segoe UI"
 FB        = "Segoe UI"
 FM        = "Consolas"
 
-
 # ════════════════════════════════════════════════════════════════════
-#  WINDOWS KIOSK LOCKDOWN  (blocks Win key, Alt+F4, Alt+Tab, etc.)
+#  UTILITIES FOR PNG ICONS
 # ════════════════════════════════════════════════════════════════════
 
-_HOOK_HANDLE   = None
-_HOOK_CB_REF   = None   # must keep reference alive
-_LOCKDOWN_ON   = False
+_icon_cache = {}
 
-WH_KEYBOARD_LL = 13
-WM_KEYDOWN     = 0x0100
-WM_SYSKEYDOWN  = 0x0104
-
-VK_LWIN  = 0x5B
-VK_RWIN  = 0x5C
-VK_TAB   = 0x09
-VK_F4    = 0x73
-VK_ESCAPE= 0x1B
-VK_F1    = 0x70
-VK_F11   = 0x7A
-VK_F12   = 0x7B
-VK_DELETE= 0x2E
-VK_MENU  = 0x12   # Alt key
-
-# Keys to completely block when kiosk is locked
-BLOCKED_KEYS = {VK_LWIN, VK_RWIN}
-
-# Key+modifier combos to block: (vk, need_alt, need_ctrl)
-BLOCKED_COMBOS = [
-    (VK_F4,    True,  False),   # Alt+F4
-    (VK_TAB,   True,  False),   # Alt+Tab
-    (VK_ESCAPE,True,  False),   # Alt+Escape
-    (VK_ESCAPE,False, True),    # Ctrl+Escape  (old Start)
-    (VK_DELETE,False, True),    # Ctrl+Del partial (guard)
-]
-
-
-class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("vkCode",      ctypes.wintypes.DWORD),
-        ("scanCode",    ctypes.wintypes.DWORD),
-        ("flags",       ctypes.wintypes.DWORD),
-        ("time",        ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-    ]
-
-
-def _keyboard_hook_proc(nCode, wParam, lParam):
-    if _LOCKDOWN_ON and nCode >= 0 and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
-        kb   = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-        vk   = kb.vkCode
-        alt  = bool(ctypes.windll.user32.GetAsyncKeyState(VK_MENU)  & 0x8000)
-        ctrl = bool(ctypes.windll.user32.GetAsyncKeyState(0x11)     & 0x8000)
-
-        # Block Windows key outright
-        if vk in BLOCKED_KEYS:
-            return 1
-
-        # Block combos
-        for (blocked_vk, need_alt, need_ctrl) in BLOCKED_COMBOS:
-            if vk == blocked_vk:
-                if need_alt  and not alt:  continue
-                if need_ctrl and not ctrl: continue
-                if not need_alt  and alt:  continue
-                if not need_ctrl and ctrl: continue
-                return 1
-
-    return ctypes.windll.user32.CallNextHookEx(
-        _HOOK_HANDLE, nCode, wParam, lParam)
-
-
-def install_keyboard_hook():
-    global _HOOK_HANDLE, _HOOK_CB_REF
-    if platform.system() != "Windows":
-        return
+def load_icon_image(path, size=(32, 32)):
+    if not path:
+        return None
+    cache_key = (path, size)
+    if cache_key in _icon_cache:
+        return _icon_cache[cache_key]
     try:
-        HOOKPROC   = ctypes.WINFUNCTYPE(
-            ctypes.c_int, ctypes.c_int,
-            ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
-        _HOOK_CB_REF = HOOKPROC(_keyboard_hook_proc)
-        _HOOK_HANDLE = ctypes.windll.user32.SetWindowsHookExW(
-            WH_KEYBOARD_LL, _HOOK_CB_REF, None, 0)
-        # Pump the hook message loop in a daemon thread
-        threading.Thread(target=_hook_message_loop, daemon=True).start()
+        from PIL import Image, ImageTk
+        if os.path.exists(path):
+            img = Image.open(path)
+            img = img.resize(size, Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            _icon_cache[cache_key] = photo
+            return photo
     except Exception as e:
-        print(f"[Hook] {e}")
+        print(f"[Icon] Failed to load {path}: {e}")
+    return None
+
+def get_method_icon(method, size=(32, 32)):
+    method_lower = method.lower()
+    if method_lower == "gcash":
+        return load_icon_image(GCASH_ICON_PATH, size)
+    elif method_lower == "maya":
+        return load_icon_image(MAYA_ICON_PATH, size)
+    return None
+
+# ════════════════════════════════════════════════════════════════════
+#  DATABASE LAYER — VPN/remote-hardened
+#
+#  Key fixes vs original:
+#   1. Per-call raw connections (no shared pool that silently dies).
+#   2. ping(reconnect=True) before every query — detects dead TCP.
+#   3. connect_timeout=8 prevents indefinite hangs over VPN.
+#   4. _pool reset to None on first error → next call rebuilds it.
+#   5. db_exec returns [] on fetch error (not None) so callers can
+#      distinguish "DB error" from "empty result" via db_exec_safe.
+#   6. db_exec_safe returns (result, error_string) for critical paths.
+#   7. db_online flag updated so UI can show connection status.
+# ════════════════════════════════════════════════════════════════════
+
+_pool       = None
+_pool_lock  = threading.Lock()
+db_online   = False
 
 
-def _hook_message_loop():
-    msg = ctypes.wintypes.MSG()
-    while True:
-        ret = ctypes.windll.user32.GetMessageW(
-            ctypes.byref(msg), None, 0, 0)
-        if ret <= 0:
-            break
-        ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
-        ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
+def _notify_db_status(ok: bool):
+    global db_online
+    db_online = ok
 
 
-def uninstall_keyboard_hook():
-    global _HOOK_HANDLE
-    if _HOOK_HANDLE:
-        try:
-            ctypes.windll.user32.UnhookWindowsHookEx(_HOOK_HANDLE)
-        except Exception:
-            pass
-        _HOOK_HANDLE = None
-
-
-def set_lockdown(active: bool):
-    global _LOCKDOWN_ON
-    _LOCKDOWN_ON = active
-    _set_taskbar(not active)
-    if active:
-        _block_task_manager(True)
-    else:
-        _block_task_manager(False)
-
-
-def _block_task_manager(block: bool):
-    """Disable/re-enable Task Manager via registry."""
-    if platform.system() != "Windows":
-        return
+def _make_pool():
+    """Create a fresh connection pool. Returns pool or None on failure."""
     try:
-        import winreg
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Policies\System"
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path,
-                             0, winreg.KEY_SET_VALUE)
-        if block:
-            winreg.SetValueEx(key, "DisableTaskMgr", 0, winreg.REG_DWORD, 1)
-        else:
-            try:
-                winreg.DeleteValue(key, "DisableTaskMgr")
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
+        p = pooling.MySQLConnectionPool(
+            pool_name="timenet_customer",
+            pool_size=5,
+            pool_reset_session=True,
+            **DB_CONFIG,
+        )
+        return p
     except Exception as e:
-        print(f"[TaskMgr] {e}")
-
-
-# ════════════════════════════════════════════════════════════════════
-#  DATABASE
-# ════════════════════════════════════════════════════════════════════
-
-_pool = None
+        print(f"[DB pool create] {e}")
+        return None
 
 
 def get_pool():
     global _pool
     if _pool is None:
-        _pool = pooling.MySQLConnectionPool(
-            pool_name="timenet_customer", pool_size=5, **DB_CONFIG)
+        with _pool_lock:
+            if _pool is None:
+                _pool = _make_pool()
     return _pool
 
 
+def _reset_pool():
+    """Discard the current pool so the next call rebuilds it."""
+    global _pool
+    with _pool_lock:
+        _pool = None
+
+
 def db_exec(query, params=(), fetch=False):
-    conn = None
+    """
+    Execute a query.
+    Returns rows (list[dict]) when fetch=True, else None.
+    Returns [] / None on error — callers must not treat [] as "no rows"
+    for critical decisions; use db_exec_safe for those.
+    Automatically pings and reconnects broken connections.
+    """
+    conn = cur = None
     try:
-        conn = get_pool().get_connection()
-        cur  = conn.cursor(dictionary=True)
-        cur.execute(query, params)
-        if fetch:
-            rows = cur.fetchall()
-            conn.close()
-            return rows
-        conn.commit()
-        conn.close()
-        return None
-    except Exception as e:
-        print(f"[DB] {e}")
-        if conn:
+        pool = get_pool()
+        if pool is None:
+            _notify_db_status(False)
+            return [] if fetch else None
+
+        conn = pool.get_connection()
+
+        try:
+            conn.ping(reconnect=True, attempts=2, delay=1)
+        except Exception:
             try:
                 conn.close()
             except Exception:
                 pass
-        return [] if fetch else None
+            _reset_pool()
+            _notify_db_status(False)
+            return [] if fetch else None
 
+        cur = conn.cursor(dictionary=True)
+        cur.execute(query, params)
+
+        if fetch:
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            _notify_db_status(True)
+            return rows
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        _notify_db_status(True)
+        return None
+
+    except mysql.connector.errors.OperationalError as e:
+        print(f"[DB OperationalError] {e}")
+        _reset_pool()
+        _notify_db_status(False)
+    except mysql.connector.errors.InterfaceError as e:
+        print(f"[DB InterfaceError] {e}")
+        _reset_pool()
+        _notify_db_status(False)
+    except Exception as e:
+        print(f"[DB ERROR] {e}")
+        _notify_db_status(False)
+    finally:
+        try:
+            if cur:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    return [] if fetch else None
+
+
+def db_exec_safe(query, params=(), fetch=False):
+    """
+    Like db_exec but returns (result, error_string).
+    error_string is None on success.
+    Use this for writes and critical reads where you must
+    distinguish a DB error from a legitimately empty result.
+    """
+    conn = cur = None
+    try:
+        pool = get_pool()
+        if pool is None:
+            _notify_db_status(False)
+            err = "Database unreachable — check DB_HOST / VPN connection."
+            return ([] if fetch else None), err
+
+        conn = pool.get_connection()
+
+        try:
+            conn.ping(reconnect=True, attempts=2, delay=1)
+        except Exception as pe:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _reset_pool()
+            _notify_db_status(False)
+            return ([] if fetch else None), f"Connection lost: {pe}"
+
+        cur = conn.cursor(dictionary=True)
+        cur.execute(query, params)
+
+        if fetch:
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            _notify_db_status(True)
+            return rows, None
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        _notify_db_status(True)
+        return None, None
+
+    except mysql.connector.errors.OperationalError as e:
+        err = str(e)
+        print(f"[DB SAFE OperationalError] {err}")
+        _reset_pool()
+        _notify_db_status(False)
+        return ([] if fetch else None), err
+    except mysql.connector.errors.InterfaceError as e:
+        err = str(e)
+        print(f"[DB SAFE InterfaceError] {err}")
+        _reset_pool()
+        _notify_db_status(False)
+        return ([] if fetch else None), err
+    except Exception as e:
+        err = str(e)
+        print(f"[DB SAFE ERROR] {err}")
+        _notify_db_status(False)
+        return ([] if fetch else None), err
+    finally:
+        try:
+            if cur:
+                cur.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+# ════════════════════════════════════════════════════════════════════
+#  DATETIME / SESSION HELPERS
+# ════════════════════════════════════════════════════════════════════
 
 def _dt_to_ms(val):
     if val is None:
@@ -349,7 +425,6 @@ def parse_time_to_seconds(val):
 def norm_session(r):
     raw_remain = r.get("paused_remain") or r.get("pausedRemain")
     remain_sec = parse_time_to_seconds(raw_remain)
-
     return {
         "id":                r["id"],
         "username":          r.get("username", ""),
@@ -377,40 +452,32 @@ def norm_session(r):
 def now_ms():
     return int(time.time() * 1000)
 
-
 def now_dt_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-
 def fmt_currency(amount):
     return f"₱{amount:,.2f}"
-
 
 def gen_session_id(username):
     ts = datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
     return f"ses-{username}-{ts}"
 
-
 def gen_payment_id(username):
     ts = datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
     return f"pay-{username}-{ts}"
 
-
 def gen_receipt():
     ts = datetime.now().strftime("%m-%d-%Y-%H-%M-%S")
     return f"RN-{ts}"
-
 
 def gen_voucher():
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     code  = "".join(random.choices(chars, k=8))
     return f"TNV-{code}"
 
-
 def calc_cost(minutes):
     raw = minutes * MINUTE_RATE
     return max(round(raw * 100) / 100, PAYMONGO_MIN_PHP)
-
 
 def paymongo_headers():
     token = base64.b64encode(f"{PAYMONGO_SECRET_KEY}:".encode()).decode()
@@ -420,13 +487,14 @@ def paymongo_headers():
         "Accept":        "application/json",
     }
 
-
 def get_this_computer():
-    rows = db_exec(
+    rows, err = db_exec_safe(
         "SELECT * FROM computers WHERE id=%s",
         (THIS_COMPUTER_ID,), fetch=True)
+    if err:
+        # DB unreachable — return sentinel so callers don't think PC is gone
+        return "DB_ERROR"
     return rows[0] if rows else None
-
 
 def find_browser():
     system = platform.system()
@@ -450,8 +518,10 @@ def find_browser():
                 return f
     return None
 
-
 def make_timenet_icon_image():
+    png_img = load_icon_image(TIMENET_ICON_PATH, size=(64, 64))
+    if png_img:
+        return png_img
     try:
         from PIL import Image, ImageDraw, ImageFont
         size = 64
@@ -477,7 +547,8 @@ def make_timenet_icon_image():
             font = ImageFont.load_default()
         draw.text((32, 51), "TN", fill=(168, 85, 247, 220),
                   font=font, anchor="mm")
-        return img
+        from PIL import ImageTk
+        return ImageTk.PhotoImage(img)
     except Exception:
         return None
 
@@ -487,7 +558,6 @@ def make_timenet_icon_image():
 # ════════════════════════════════════════════════════════════════════
 
 _tray_icon = None
-
 
 def start_tray(on_restore):
     global _tray_icon
@@ -510,7 +580,6 @@ def start_tray(on_restore):
     _tray_icon = icon
     threading.Thread(target=icon.run, daemon=True).start()
 
-
 def stop_tray():
     global _tray_icon
     if _tray_icon:
@@ -519,23 +588,6 @@ def stop_tray():
         except Exception:
             pass
         _tray_icon = None
-
-
-# ════════════════════════════════════════════════════════════════════
-#  TASKBAR HIDE HELPER  (Windows only)
-# ════════════════════════════════════════════════════════════════════
-
-def _set_taskbar(visible):
-    if platform.system() != "Windows":
-        return
-    try:
-        user32 = ctypes.windll.user32
-        for cls_name in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
-            hw = user32.FindWindowW(cls_name, None)
-            if hw:
-                user32.ShowWindow(hw, 5 if visible else 0)
-    except Exception:
-        pass
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -550,7 +602,6 @@ def _lerp_color(c1, c2, t):
     b = max(0, min(255, int(b1 + (b2-b1)*t)))
     return f"#{r:02x}{g:02x}{b:02x}"
 
-
 def draw_gradient_h(canvas, width, height, c1, c2, steps=80):
     canvas.delete("all")
     if width < 2:
@@ -559,11 +610,9 @@ def draw_gradient_h(canvas, width, height, c1, c2, steps=80):
     for i in range(steps):
         col = _lerp_color(c1, c2, i / steps)
         sx  = i * sw
-        canvas.create_rectangle(sx, 0, sx+sw+1, height,
-                                 fill=col, outline="")
+        canvas.create_rectangle(sx, 0, sx+sw+1, height, fill=col, outline="")
     canvas.create_rectangle(steps*sw, 0, width, height,
                              fill=_lerp_color(c1, c2, 1.0), outline="")
-
 
 def draw_gradient_v(canvas, width, height, c1, c2, steps=60):
     canvas.delete("all")
@@ -573,8 +622,7 @@ def draw_gradient_v(canvas, width, height, c1, c2, steps=60):
     for i in range(steps):
         col = _lerp_color(c1, c2, i / steps)
         sy  = i * sh
-        canvas.create_rectangle(0, sy, width, sy+sh+1,
-                                 fill=col, outline="")
+        canvas.create_rectangle(0, sy, width, sy+sh+1, fill=col, outline="")
     canvas.create_rectangle(0, steps*sh, width, height,
                              fill=_lerp_color(c1, c2, 1.0), outline="")
 
@@ -586,10 +634,8 @@ def draw_gradient_v(canvas, width, height, c1, c2, steps=60):
 def hsep(parent, color=BORDER2, h=1):
     return tk.Frame(parent, bg=color, height=h)
 
-
 def accent_bar(parent, color=PURPLE, h=3):
     return tk.Frame(parent, bg=color, height=h)
-
 
 def make_gradient_canvas_h(parent, height=4, c1=PURPLE, c2=CYAN):
     c = tk.Canvas(parent, bg=BG2, height=height, highlightthickness=0)
@@ -617,7 +663,6 @@ def make_gradient_canvas_h(parent, height=4, c1=PURPLE, c2=CYAN):
     c.after(20, _poll)
     return c
 
-
 def dot_grid(canvas, event, color=TEXT4, spacing=36):
     canvas.delete("dots")
     for x in range(0, event.width, spacing):
@@ -625,13 +670,11 @@ def dot_grid(canvas, event, color=TEXT4, spacing=36):
             canvas.create_oval(x-1, y-1, x+1, y+1,
                                fill=color, outline="", tags="dots")
 
-
 def make_bg_canvas(parent):
     c = tk.Canvas(parent, bg=BG, highlightthickness=0)
     c.place(relwidth=1, relheight=1)
     c.bind("<Configure>", lambda e: dot_grid(c, e))
     return c
-
 
 def ghost_button(parent, text, command, color=TEXT2, pady=12):
     return tk.Button(parent, text=text, command=command,
@@ -647,8 +690,7 @@ def ghost_button(parent, text, command, color=TEXT2, pady=12):
 
 def add_gradient_border(dialog, thickness=3, c1=PURPLE, c2=CYAN):
     def _make_h(parent, flip=False):
-        ca = tk.Canvas(parent, height=thickness,
-                       highlightthickness=0, bg=BG2)
+        ca = tk.Canvas(parent, height=thickness, highlightthickness=0, bg=BG2)
         _a, _b = (c2, c1) if flip else (c1, c2)
 
         def _draw(w=None):
@@ -661,8 +703,7 @@ def add_gradient_border(dialog, thickness=3, c1=PURPLE, c2=CYAN):
         return ca
 
     def _make_v(parent, flip=False):
-        ca = tk.Canvas(parent, width=thickness,
-                       highlightthickness=0, bg=BG2)
+        ca = tk.Canvas(parent, width=thickness, highlightthickness=0, bg=BG2)
         _a, _b = (c2, c1) if flip else (c1, c2)
 
         def _draw(h=None):
@@ -778,8 +819,8 @@ class AdminPinDialog(tk.Toplevel):
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
         self.update_idletasks()
-        self.bind("<Return>", lambda _: self._check())
-        self.bind("<Escape>", lambda _: self.destroy())
+        self.bind("<Return>",  lambda _: self._check())
+        self.bind("<Escape>",  lambda _: self.destroy())
         add_gradient_border(self, thickness=3, c1=RED, c2=PURPLE)
 
     def _build(self):
@@ -876,8 +917,7 @@ class CashVoucherDialog(tk.Toplevel):
         ]:
             r = tk.Frame(s, bg=BG3)
             r.pack(fill="x", padx=16, pady=2)
-            tk.Label(r, text=lbl, fg=TEXT3, bg=BG3,
-                     font=(FB, 10)).pack(side="left")
+            tk.Label(r, text=lbl, fg=TEXT3, bg=BG3, font=(FB, 10)).pack(side="left")
             sz = 14 if lbl == "Amount Due" else 11
             wt = "bold" if lbl == "Amount Due" else "normal"
             tk.Label(r, text=val, fg=col, bg=BG3,
@@ -930,8 +970,14 @@ class CashVoucherDialog(tk.Toplevel):
     def _poll(self):
         if self._done:
             return
-        rows = db_exec("SELECT status FROM sessions WHERE id=%s",
-                       (self.session_id,), fetch=True)
+        # Use db_exec_safe so a DB error doesn't falsely trigger activation
+        rows, err = db_exec_safe(
+            "SELECT status FROM sessions WHERE id=%s",
+            (self.session_id,), fetch=True)
+        if err:
+            # DB unreachable — keep waiting, try again
+            self.after(1500, self._poll)
+            return
         if rows and rows[0]["status"] == "active":
             self._on_activated()
             return
@@ -947,9 +993,8 @@ class CashVoucherDialog(tk.Toplevel):
         if self._done:
             return
         self._done = True
-        db_exec(
-            "UPDATE sessions SET status='cancelled' WHERE id=%s",
-            (self.session_id,))
+        db_exec("UPDATE sessions SET status='cancelled' WHERE id=%s",
+                (self.session_id,))
         db_exec(
             "UPDATE computers SET status='available', current_session_id=NULL "
             "WHERE current_session_id=%s",
@@ -969,7 +1014,7 @@ class CashVoucherDialog(tk.Toplevel):
 
 
 # ════════════════════════════════════════════════════════════════════
-#  PAYMENT WAITING SCREEN  (GCash / Maya)
+#  PAYMENT WAITING SCREEN (GCash / Maya)
 # ════════════════════════════════════════════════════════════════════
 
 class PaymentWaitingScreen:
@@ -991,6 +1036,7 @@ class PaymentWaitingScreen:
         self._overlay     = None
         self._tmp_dir     = None
         self._browser_path= find_browser()
+        self._method_icon = get_method_icon(method, size=(28, 28))
         self._start_watcher()
         if self._browser_path:
             self._launch_browser()
@@ -1035,8 +1081,13 @@ class PaymentWaitingScreen:
 
     def _build_top_bar(self):
         sw = self.app.winfo_screenwidth()
-        colors = {"GCASH": ("#00B4D8", "📱"), "MAYA": (PURPLE, "💜")}
-        color, icon = colors.get(self.method, (CYAN, "💳"))
+        if self.method == "GCASH":
+            color = "#00B4D8"
+            fallback_text = "📱"
+        else:
+            color = PURPLE
+            fallback_text = "💜"
+
         bar = tk.Toplevel(self.app)
         bar.configure(bg=BG2)
         bar.overrideredirect(True)
@@ -1049,8 +1100,12 @@ class PaymentWaitingScreen:
         inner.pack(fill="both", expand=True, padx=20)
         left = tk.Frame(inner, bg=BG2)
         left.pack(side="left", fill="y")
-        tk.Label(left, text=icon, bg=BG2, fg=color,
-                 font=(FD, 18)).pack(side="left", padx=(0, 10), pady=14)
+        if self._method_icon:
+            icon_lbl = tk.Label(left, image=self._method_icon, bg=BG2)
+            icon_lbl.pack(side="left", padx=(0, 10), pady=14)
+        else:
+            tk.Label(left, text=fallback_text, bg=BG2, fg=color,
+                     font=(FD, 18)).pack(side="left", padx=(0, 10), pady=14)
         ic = tk.Frame(left, bg=BG2)
         ic.pack(side="left")
         tk.Label(ic, text=f"{self.method} Payment", bg=BG2, fg=color,
@@ -1069,13 +1124,17 @@ class PaymentWaitingScreen:
                   activebackground=RED, activeforeground=TEXT,
                   highlightthickness=1,
                   highlightbackground=RED).pack(side="right", pady=12)
-        make_gradient_canvas_h(bar, height=2, c1=CYAN, c2=PURPLE).pack(fill="x",
-                                                                         side="bottom")
+        make_gradient_canvas_h(bar, height=2, c1=CYAN, c2=PURPLE).pack(
+            fill="x", side="bottom")
 
     def _build_overlay(self):
         sw, sh = self.app.winfo_screenwidth(), self.app.winfo_screenheight()
-        colors = {"GCASH": ("#00B4D8", "📱"), "MAYA": (PURPLE, "💜")}
-        color, icon = colors.get(self.method, (CYAN, "💳"))
+        if self.method == "GCASH":
+            color = "#00B4D8"
+            fallback_text = "📱"
+        else:
+            color = PURPLE
+            fallback_text = "💜"
         ov = tk.Toplevel(self.app)
         ov.configure(bg=BG)
         ov.overrideredirect(True)
@@ -1089,8 +1148,14 @@ class PaymentWaitingScreen:
         tk.Frame(bar, bg=color, width=4).pack(side="left", fill="y")
         lf = tk.Frame(bar, bg=BG2)
         lf.pack(side="left", padx=20, fill="y")
-        tk.Label(lf, text=f"  {icon}  {self.method} Payment",
-                 bg=BG2, fg=color, font=(FD, 14, "bold")).pack(side="left", pady=20)
+        if self._method_icon:
+            icon_lbl = tk.Label(lf, image=self._method_icon, bg=BG2)
+            icon_lbl.pack(side="left", pady=20)
+            tk.Label(lf, text=f"  {self.method} Payment",
+                     bg=BG2, fg=color, font=(FD, 14, "bold")).pack(side="left")
+        else:
+            tk.Label(lf, text=f"{fallback_text}  {self.method} Payment",
+                     bg=BG2, fg=color, font=(FD, 14, "bold")).pack(side="left", pady=20)
         tk.Label(lf, text=f"   {fmt_currency(self.amount)}",
                  bg=BG2, fg=GREEN, font=(FD, 13, "bold")).pack(side="left")
         rf = tk.Frame(bar, bg=BG2)
@@ -1104,12 +1169,21 @@ class PaymentWaitingScreen:
                   highlightthickness=1, highlightbackground=RED,
                   activebackground=RED, activeforeground=TEXT).pack(side="left")
         make_gradient_canvas_h(ov, height=2, c1=PURPLE, c2=CYAN).pack(fill="x")
-        body   = tk.Frame(ov, bg=BG)
+        body = tk.Frame(ov, bg=BG)
         body.pack(fill="both", expand=True)
         centre = tk.Frame(body, bg=BG)
         centre.place(relx=0.5, rely=0.5, anchor="center")
-        tk.Label(centre, text=icon, bg=BG, fg=color,
-                 font=(FD, 72)).pack(pady=(0, 12))
+        if self._method_icon:
+            big_icon = get_method_icon(self.method, size=(72, 72))
+            if big_icon:
+                tk.Label(centre, image=big_icon, bg=BG).pack(pady=(0, 12))
+                centre.big_icon = big_icon
+            else:
+                tk.Label(centre, text=fallback_text, bg=BG, fg=color,
+                         font=(FD, 72)).pack(pady=(0, 12))
+        else:
+            tk.Label(centre, text=fallback_text, bg=BG, fg=color,
+                     font=(FD, 72)).pack(pady=(0, 12))
         tk.Label(centre, text=f"Pay {fmt_currency(self.amount)} via {self.method}",
                  bg=BG, fg=TEXT, font=(FD, 20, "bold")).pack(pady=(0, 6))
         tk.Label(centre, text="No browser found — scan or open the link below.",
@@ -1120,8 +1194,8 @@ class PaymentWaitingScreen:
         tk.Label(uf, text="PAYMENT LINK", bg=BG3, fg=TEXT3,
                  font=(FB, 8, "bold")).pack(anchor="w")
         tk.Entry(uf, textvariable=tk.StringVar(value=self.checkout_url),
-                 state="readonly", bg=BG3, fg=CYAN,
-                 font=(FM, 9), relief="flat", readonlybackground=BG3,
+                 state="readonly", bg=BG3, fg=CYAN, font=(FM, 9),
+                 relief="flat", readonlybackground=BG3,
                  width=70).pack(fill="x", pady=(4, 0))
         self._dot_lbl = tk.Label(centre,
                                  text="Checking payment status  ●○○",
@@ -1283,12 +1357,9 @@ class PayMongoAPI:
         add_time_to = info.get("add_time_to")
 
         if add_time_to:
-            db_exec(
-                "UPDATE sessions SET duration = duration + %s WHERE id = %s",
-                (duration, add_time_to))
-            db_exec(
-                "UPDATE sessions SET status = 'cancelled' WHERE id = %s",
-                (sid,))
+            db_exec("UPDATE sessions SET duration = duration + %s WHERE id = %s",
+                    (duration, add_time_to))
+            db_exec("UPDATE sessions SET status = 'cancelled' WHERE id = %s", (sid,))
             db_exec("""
                 INSERT IGNORE INTO payments
                   (id, session_id, username, amount, method, timestamp, receipt_no, status)
@@ -1296,13 +1367,11 @@ class PayMongoAPI:
             """, (gen_payment_id(username), sid, username,
                   amount, method, dt_str, gen_receipt()))
         else:
-            existing = db_exec(
-                "SELECT id FROM sessions WHERE id = %s", (sid,), fetch=True)
+            existing = db_exec("SELECT id FROM sessions WHERE id = %s", (sid,), fetch=True)
             if not existing:
                 db_exec("""
                     INSERT IGNORE INTO sessions
-                      (id, username, computer_id, duration, cost,
-                       status, start_time)
+                      (id, username, computer_id, duration, cost, status, start_time)
                     VALUES (%s, %s, %s, %s, %s, 'active', %s)
                 """, (sid, username, cid, duration, amount, dt_str))
             else:
@@ -1312,13 +1381,9 @@ class PayMongoAPI:
                     "    computer_id = %s, duration = %s, cost = %s "
                     "WHERE id = %s",
                     (dt_str, cid, duration, amount, sid))
-
             db_exec(
-                "UPDATE computers "
-                "SET status = 'occupied', current_session_id = %s "
-                "WHERE id = %s",
-                (sid, cid))
-
+                "UPDATE computers SET status = 'occupied', current_session_id = %s "
+                "WHERE id = %s", (sid, cid))
             db_exec("""
                 INSERT IGNORE INTO payments
                   (id, session_id, username, amount, method, timestamp, receipt_no, status)
@@ -1373,6 +1438,550 @@ class Auth:
     @classmethod
     def username(cls):
         return cls.user["username"] if cls.user else ""
+
+
+# ════════════════════════════════════════════════════════════════════
+#  MAIN APP WINDOW
+# ════════════════════════════════════════════════════════════════════
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("TimeNet Cafe")
+        self.configure(bg=BG)
+        self._locked             = True
+        self._hook_running       = False
+        self._taskbar_enforce_on = False
+        self._registered_hk_ids  = []
+        self._tray_active        = False
+        self._session_win        = None
+        self._taskbar_proxy      = None
+        self._unlocked_once      = False
+        self._apply_lock()
+        self._setup_ttk()
+        self._set_timenet_icon()
+        self.container = tk.Frame(self, bg=BG)
+        self.container.pack(fill="both", expand=True)
+        self.current_frame = None
+        self.show_login()
+        self.bind_all("<Control-Shift-A>", lambda _: self._admin_exit())
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        paymongo.app = self
+
+    def _set_timenet_icon(self, target=None):
+        win = target or self
+        try:
+            from PIL import ImageTk
+            img = make_timenet_icon_image()
+            if img:
+                win.iconphoto(True, img)
+                if win is self:
+                    self._icon_photo = img
+                else:
+                    win._icon_photo = img
+        except Exception as e:
+            print(f"[Icon] {e}")
+
+    @staticmethod
+    def _set_taskbar(visible):
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            for cls_name in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+                hw = user32.FindWindowW(cls_name, None)
+                if hw:
+                    user32.ShowWindow(hw, 5 if visible else 0)
+        except Exception:
+            pass
+
+    def _apply_lock(self):
+        self._locked = True
+        self._set_taskbar(False)
+        self._start_hotkeys()
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        self.overrideredirect(False)
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{sw}x{sh}+0+0")
+        self.update_idletasks()
+        self.overrideredirect(True)
+        self.update_idletasks()
+        self.lift()
+        self.focus_force()
+        self.attributes("-topmost", True)
+        self.after(500, lambda: self.attributes("-topmost", False))
+
+    def unlock_for_session(self):
+        if not self._locked:
+            return
+        self._locked              = False
+        self._taskbar_enforce_on  = False
+        self._stop_hotkeys()
+
+        self.overrideredirect(False)
+        self.update_idletasks()
+        self.withdraw()
+
+        proxy = tk.Toplevel(self)
+        proxy.title("TimeNet Cafe — Session Timer")
+        proxy.configure(bg=BG)
+        proxy.geometry("1x1+-32000+-32000")
+        proxy.resizable(False, False)
+        proxy.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._set_timenet_icon(proxy)
+        proxy.update_idletasks()
+        self._taskbar_proxy = proxy
+
+        w, h = 300, 210
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        win = tk.Toplevel(self)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        win.configure(bg=BG2)
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+        win.geometry(f"{w}x{h}+{sw-w-12}+{sh-h-48}")
+        win.update_idletasks()
+        self._session_win = win
+
+        proxy.bind("<Unmap>", lambda e: self._on_proxy_unmap())
+        proxy.bind("<Map>",   lambda e: self._on_proxy_map())
+
+        self._set_taskbar(True)
+        if isinstance(self.current_frame, CustomerDashboard):
+            self.current_frame._render_session_into(win)
+
+    def _on_proxy_unmap(self):
+        try:
+            if self._session_win:
+                self._session_win.withdraw()
+        except Exception:
+            pass
+
+    def _on_proxy_map(self):
+        try:
+            if self._session_win:
+                self._session_win.deiconify()
+                self._session_win.lift()
+                self._session_win.attributes("-topmost", True)
+        except Exception:
+            pass
+
+    def relock(self):
+        self._taskbar_enforce_on = False
+        self.attributes("-topmost", False)
+
+        for attr in ("_session_win", "_taskbar_proxy"):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+        if self._tray_active:
+            self._tray_active = False
+            stop_tray()
+
+        self.deiconify()
+        self.overrideredirect(False)
+        self.resizable(True, True)
+        self.update_idletasks()
+        self._apply_lock()
+
+    def _restore_from_tray(self):
+        self.after(0, self._do_restore)
+
+    def _do_restore(self):
+        try:
+            if self._session_win:
+                self._session_win.deiconify()
+                self._session_win.lift()
+                self._session_win.attributes("-topmost", True)
+            else:
+                self.deiconify()
+                self.lift()
+                self.focus_force()
+                self.attributes("-topmost", True)
+                self.after(400, lambda: self.attributes("-topmost", True))
+        except Exception:
+            pass
+
+    def _start_hotkeys(self):
+        if platform.system() != "Windows" or self._hook_running:
+            return
+        self._hook_running = True
+        self._hook_stop    = threading.Event()
+        self._hook_tid     = None
+        self._hook_thread  = threading.Thread(target=self._hook_loop, daemon=True)
+        self._hook_thread.start()
+        self.after(200, self._register_hotkeys)
+        self._taskbar_enforce_on = True
+        self._taskbar_enforce()
+
+    def _stop_hotkeys(self):
+        if platform.system() != "Windows":
+            return
+        self._hook_running       = False
+        self._taskbar_enforce_on = False
+        self._unregister_hotkeys()
+        if hasattr(self, "_hook_stop"):
+            self._hook_stop.set()
+
+    def _register_hotkeys(self):
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd   = self.winfo_id()
+
+            MOD_ALT      = 0x0001
+            MOD_CTRL     = 0x0002
+            MOD_WIN      = 0x0008
+            MOD_NOREPEAT = 0x4000
+
+            win_vks = [
+                0x09, 0x44, 0x45, 0x49, 0x4C, 0x52,
+                0x53, 0x58, 0x41, 0x4B, 0x50,
+                0x4D, 0x55, 0x56, 0x57, 0x5A,
+                0x1B, 0x70, 0x20,
+                0x21, 0x22,
+                0x25, 0x26, 0x27, 0x28,
+                0x31, 0x32, 0x33, 0x34, 0x35,
+                0x36, 0x37, 0x38, 0x39, 0x30,
+            ]
+            alt_vks  = [0x73, 0x09, 0x1B, 0x20, 0x79]
+            ctrl_vks = [0x1B, 0x09]
+
+            registered = []
+            hid = 0xBE01
+
+            for vk in win_vks:
+                if user32.RegisterHotKey(hwnd, hid, MOD_WIN | MOD_NOREPEAT, vk):
+                    registered.append(hid)
+                hid += 1
+            for vk in alt_vks:
+                if user32.RegisterHotKey(hwnd, hid, MOD_ALT | MOD_NOREPEAT, vk):
+                    registered.append(hid)
+                hid += 1
+            for vk in ctrl_vks:
+                if user32.RegisterHotKey(hwnd, hid, MOD_CTRL | MOD_NOREPEAT, vk):
+                    registered.append(hid)
+                hid += 1
+
+            self._registered_hk_ids = registered
+        except Exception:
+            pass
+
+    def _unregister_hotkeys(self):
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd   = self.winfo_id()
+            for hid in self._registered_hk_ids:
+                user32.UnregisterHotKey(hwnd, hid)
+            self._registered_hk_ids.clear()
+        except Exception:
+            pass
+
+    def _taskbar_enforce(self):
+        if not self._taskbar_enforce_on:
+            return
+        self._set_taskbar(False)
+        self.after(500, self._taskbar_enforce)
+
+    def _hook_loop(self):
+        import ctypes, ctypes.wintypes
+
+        WH_KEYBOARD_LL = 13
+        WM_KEYDOWN     = 0x0100
+        WM_KEYUP       = 0x0101
+        WM_SYSKEYDOWN  = 0x0104
+        WM_SYSKEYUP    = 0x0105
+        HC_ACTION      = 0
+        PM_REMOVE      = 0x0001
+
+        VK_LWIN  = 0x5B
+        VK_RWIN  = 0x5C
+        VK_APPS  = 0x5D
+        VK_TAB   = 0x09
+        VK_ESC   = 0x1B
+        VK_F4    = 0x73
+        VK_F10   = 0x79
+        VK_F12   = 0x7B
+        VK_SPACE = 0x20
+
+        VK_LCONTROL = 0xA2
+        VK_RCONTROL = 0xA3
+        VK_LSHIFT   = 0xA0
+        VK_RSHIFT   = 0xA1
+
+        MOD_ALT_FLAG = 0x20
+
+        user32   = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        class KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ("vkCode",      ctypes.wintypes.DWORD),
+                ("scanCode",    ctypes.wintypes.DWORD),
+                ("flags",       ctypes.wintypes.DWORD),
+                ("time",        ctypes.wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
+        HOOKPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_long, ctypes.c_int,
+            ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM)
+
+        win_down = [False]
+        hook_ref = [None]
+
+        def _key_held(vk):
+            return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+        def _handler(nCode, wParam, lParam):
+            if nCode != HC_ACTION:
+                return user32.CallNextHookEx(hook_ref[0], nCode, wParam, lParam)
+
+            kb    = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            vk    = kb.vkCode
+            alt   = bool(kb.flags & MOD_ALT_FLAG)
+            is_dn = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
+
+            if vk in (VK_LWIN, VK_RWIN):
+                win_down[0] = is_dn
+                return 1
+            if vk == VK_APPS:
+                return 1
+            if win_down[0]:
+                return 1
+
+            ctrl  = _key_held(VK_LCONTROL) or _key_held(VK_RCONTROL)
+            shift = _key_held(VK_LSHIFT)   or _key_held(VK_RSHIFT)
+
+            if alt and vk in (VK_F4, VK_TAB, VK_ESC, VK_SPACE, VK_F10):
+                return 1
+            if ctrl and vk == VK_ESC:
+                return 1
+            if ctrl and shift and vk == VK_ESC:
+                return 1
+            if ctrl and alt:
+                return 1
+            if vk == VK_F12:
+                return 1
+
+            return user32.CallNextHookEx(hook_ref[0], nCode, wParam, lParam)
+
+        cb   = HOOKPROC(_handler)
+        hook = user32.SetWindowsHookExW(
+            WH_KEYBOARD_LL, cb, kernel32.GetModuleHandleW(None), 0)
+        if not hook:
+            self._hook_running = False
+            return
+        hook_ref[0] = hook
+        self._hook_tid = kernel32.GetCurrentThreadId()
+        msg = ctypes.wintypes.MSG()
+        while not self._hook_stop.is_set():
+            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+            time.sleep(0.005)
+        user32.UnhookWindowsHookEx(hook)
+        self._hook_running = False
+
+    def _admin_exit(self):
+        def _do():
+            self._stop_hotkeys()
+            self._set_taskbar(True)
+            stop_tray()
+            for attr in ("_session_win", "_taskbar_proxy"):
+                w = getattr(self, attr, None)
+                if w:
+                    try:
+                        w.destroy()
+                    except Exception:
+                        pass
+            self.destroy()
+        AdminPinDialog(self, on_success=_do)
+
+    def _setup_ttk(self):
+        s = ttk.Style(self)
+        s.theme_use("clam")
+        s.configure("Treeview",
+                    background=BG2, foreground=TEXT,
+                    fieldbackground=BG2, bordercolor=BORDER,
+                    rowheight=32, font=(FB, 10))
+        s.configure("Treeview.Heading",
+                    background=BG3, foreground=TEXT2,
+                    relief="flat", font=(FB, 10, "bold"), borderwidth=0)
+        s.map("Treeview",
+              background=[("selected", "#0d2a42")],
+              foreground=[("selected", PURPLE)])
+        s.configure("TScrollbar",
+                    background=BG4, troughcolor=BG2,
+                    bordercolor=BG, arrowcolor=TEXT3, relief="flat")
+        s.configure("Session.Horizontal.TProgressbar",
+                    troughcolor=BG3, background=PURPLE,
+                    thickness=8, bordercolor=BG3)
+
+    def switch_frame(self, cls, *a, **kw):
+        if self.current_frame:
+            self.current_frame.destroy()
+        f = cls(self.container, self, *a, **kw)
+        f.pack(fill="both", expand=True)
+        self.current_frame = f
+
+    def show_login(self):
+        self.switch_frame(LoginPage)
+
+    def show_register(self):
+        self.switch_frame(RegisterPage)
+
+    def show_customer_dashboard(self):
+        self.switch_frame(CustomerDashboard)
+
+    def logout(self):
+        Auth.logout()
+        if not self._locked:
+            self.relock()
+        else:
+            self._set_taskbar(False)
+        self.show_login()
+
+    def _on_payment_success(self, info):
+        if isinstance(self.current_frame, CustomerDashboard):
+            self.current_frame._force_load_session()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  LOGIN PAGE
+# ════════════════════════════════════════════════════════════════════
+
+class LoginPage(tk.Frame):
+    _ERR_CLEAR_MS = 1500
+
+    def __init__(self, parent, app):
+        super().__init__(parent, bg=BG)
+        self.app         = app
+        self._err_job    = None
+        self._build()
+
+    def _show_msg(self, text, color=RED, auto_clear=True):
+        if self._err_job is not None:
+            try:
+                self.after_cancel(self._err_job)
+            except Exception:
+                pass
+            self._err_job = None
+        self.err.config(text=text, fg=color)
+        if auto_clear and text:
+            self._err_job = self.after(
+                self._ERR_CLEAR_MS, lambda: self.err.config(text=""))
+
+    def _build(self):
+        make_bg_canvas(self)
+        outer = tk.Frame(self, bg=BG)
+        outer.place(relx=0.5, rely=0.5, anchor="center")
+        card_border = tk.Frame(outer, bg=BORDER2)
+        card_border.pack()
+        card = tk.Frame(card_border, bg=BG2)
+        card.pack(padx=1, pady=1)
+        make_gradient_canvas_h(card, height=4, c1=PURPLE, c2=CYAN).pack(fill="x")
+        tk.Label(card, text="🖥", bg=BG2, fg=PURPLE,
+                 font=(FD, 36)).pack(pady=(30, 0))
+        tk.Label(card, text="TimeNet Cafe", bg=BG2, fg=TEXT,
+                 font=(FD, 22, "bold")).pack(pady=(6, 2))
+        tk.Label(card, text="Sign in to your account", bg=BG2, fg=TEXT2,
+                 font=(FB, 11)).pack(pady=(0, 20))
+        hsep(card).pack(fill="x", padx=36, pady=(0, 20))
+        form = tk.Frame(card, bg=BG2)
+        form.pack(padx=48, fill="x")
+        self.err = tk.Label(form, text="", fg=RED, bg=BG2,
+                            wraplength=340, font=(FB, 10), justify="left")
+        self.err.pack(fill="x", pady=(0, 8))
+        self.usr = tk.StringVar()
+        self.pwd = tk.StringVar()
+        tk.Label(form, text="USERNAME", fg=TEXT3, bg=BG2,
+                 font=(FB, 8, "bold")).pack(anchor="w", pady=(0, 3))
+        uf = tk.Frame(form, bg=BG4, highlightthickness=1,
+                      highlightbackground=BORDER2)
+        uf.pack(fill="x", pady=(0, 16))
+        eu = tk.Entry(uf, textvariable=self.usr, bg=BG4, fg=TEXT,
+                      insertbackground=PURPLE, font=(FB, 12), relief="flat")
+        eu.pack(padx=14, pady=10, fill="x")
+        eu.bind("<FocusIn>",  lambda _: uf.config(highlightbackground=PURPLE))
+        eu.bind("<FocusOut>", lambda _: uf.config(highlightbackground=BORDER2))
+        tk.Label(form, text="PASSWORD", fg=TEXT3, bg=BG2,
+                 font=(FB, 8, "bold")).pack(anchor="w", pady=(0, 3))
+        pf = tk.Frame(form, bg=BG4, highlightthickness=1,
+                      highlightbackground=BORDER2)
+        pf.pack(fill="x", pady=(0, 16))
+        ep = tk.Entry(pf, textvariable=self.pwd, show="●",
+                      bg=BG4, fg=TEXT, insertbackground=PURPLE,
+                      font=(FB, 12), relief="flat")
+        ep.pack(padx=14, pady=10, fill="x")
+        ep.bind("<FocusIn>",  lambda _: pf.config(highlightbackground=PURPLE))
+        ep.bind("<FocusOut>", lambda _: pf.config(highlightbackground=BORDER2))
+        ep.bind("<Return>",   lambda _: self._login())
+        self.sign_btn = tk.Button(
+            form, text="Sign In →", command=self._login,
+            bg=PURPLE, fg=TEXT, font=(FD, 12, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=PURPLE2, activeforeground=TEXT,
+            padx=20, pady=14)
+        self.sign_btn.pack(fill="x", pady=(0, 6))
+        hsep(card).pack(fill="x", padx=36, pady=20)
+        footer = tk.Frame(card, bg=BG2)
+        footer.pack(pady=(0, 28))
+        tk.Label(footer, text="New here? ", fg=TEXT2, bg=BG2,
+                 font=(FB, 10)).pack(side="left")
+        rl = tk.Label(footer, text="Create an account", fg=CYAN, bg=BG2,
+                      cursor="hand2", font=(FB, 10, "bold"))
+        rl.pack(side="left")
+        rl.bind("<Button-1>", lambda _: self.app.show_register())
+
+    def _login(self):
+        u = self.usr.get().strip()
+        p = self.pwd.get().strip()
+        if not u or not p:
+            self._show_msg("⚠  Please fill in all fields.")
+            return
+        self.sign_btn.config(state="disabled", bg=BG4, fg=TEXT3,
+                             text="⏳  Logging in…", activebackground=BG4)
+        self._show_msg("⏳  Logging in…", color=CYAN, auto_clear=False)
+        self.update_idletasks()
+
+        def _do_login():
+            rows, err = db_exec_safe(
+                "SELECT * FROM users WHERE username=%s AND password=%s",
+                (u, p), fetch=True)
+            self.after(0, lambda: self._finish_login(rows, err))
+
+        threading.Thread(target=_do_login, daemon=True).start()
+
+    def _finish_login(self, rows, err):
+        self.sign_btn.config(state="normal", bg=PURPLE, fg=TEXT,
+                             text="Sign In →", activebackground=PURPLE2)
+        if err:
+            self._show_msg("✗  Cannot reach database — check connection.")
+            return
+        if rows:
+            user = dict(rows[0])
+            if user.get("role") == "admin":
+                self._show_msg("✗  Use the Admin portal for admin accounts.")
+                return
+            self._show_msg("✅  Welcome back! Loading…", color=GREEN, auto_clear=False)
+            Auth.login(user)
+            self.after(800, self.app.show_customer_dashboard)
+        else:
+            self._show_msg("✗  Invalid username or password.")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1473,7 +2082,6 @@ _RECAPTCHA_HTML = """\
 </body>
 </html>
 """
-
 
 def verify_recaptcha(token):
     if RECAPTCHA_SECRET_KEY == "YOUR_SECRET_KEY_HERE":
@@ -1818,8 +2426,7 @@ class RegisterPage(tk.Frame):
             e.bind("<FocusOut>", lambda _: ff.config(highlightbackground=BORDER2))
             return e
 
-        _entry_first = _entry_field(form, "USERNAME", "username")
-        self.after(100, _entry_first.focus_set)
+        _entry_field(form, "USERNAME", "username")
         pw_row = tk.Frame(form, bg=BG2)
         pw_row.pack(fill="x")
         pw_row.columnconfigure(0, weight=1)
@@ -1930,30 +2537,37 @@ class RegisterPage(tk.Frame):
         err = self.err
 
         def _finish():
-            exists = db_exec("SELECT id FROM users WHERE username=%s",
-                             (d["username"],), fetch=True)
+            exists, db_err = db_exec_safe(
+                "SELECT id FROM users WHERE username=%s",
+                (d["username"],), fetch=True)
+            if db_err:
+                app.after(0, lambda: err.config(
+                    text="✗  Cannot reach database.", fg=RED))
+                return
             if exists:
                 app.after(0, lambda: err.config(
                     text="✗  Username already taken.", fg=RED))
                 return
             dt_str = now_dt_str()
-            ts = datetime.now().strftime("%m%d%Y%H%M%S")
-            new_id = f"usr-{d['username']}-{ts}"
             new_user = {
-                "id":               new_id,
+                "id":               d["username"],
                 "username":         d["username"],
                 "password":         d["password"],
                 "role":             "customer",
                 "registered_on_pc": THIS_COMPUTER_ID,
                 "created_at":       dt_str,
             }
-            db_exec("""
+            _, ins_err = db_exec_safe("""
                 INSERT INTO users
                   (id, username, password, role, registered_on_pc, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (new_user["id"], new_user["username"], new_user["password"],
                   new_user["role"], new_user["registered_on_pc"],
                   new_user["created_at"]))
+            if ins_err:
+                app.after(0, lambda: err.config(
+                    text=f"✗  DB error: {ins_err[:60]}", fg=RED))
+                return
             Auth.login(new_user)
 
             def _show_success():
@@ -1967,134 +2581,6 @@ class RegisterPage(tk.Frame):
             app.after(0, _show_success)
 
         threading.Thread(target=_finish, daemon=True).start()
-
-
-# ════════════════════════════════════════════════════════════════════
-#  LOGIN PAGE
-# ════════════════════════════════════════════════════════════════════
-
-class LoginPage(tk.Frame):
-    _ERR_CLEAR_MS = 1500
-
-    def __init__(self, parent, app):
-        super().__init__(parent, bg=BG)
-        self.app         = app
-        self._err_job    = None
-        self._build()
-
-    def _show_msg(self, text, color=RED, auto_clear=True):
-        if self._err_job is not None:
-            try:
-                self.after_cancel(self._err_job)
-            except Exception:
-                pass
-            self._err_job = None
-        self.err.config(text=text, fg=color)
-        if auto_clear and text:
-            self._err_job = self.after(
-                self._ERR_CLEAR_MS,
-                lambda: self.err.config(text=""))
-
-    def _build(self):
-        make_bg_canvas(self)
-        outer = tk.Frame(self, bg=BG)
-        outer.place(relx=0.5, rely=0.5, anchor="center")
-        card_border = tk.Frame(outer, bg=BORDER2)
-        card_border.pack()
-        card = tk.Frame(card_border, bg=BG2)
-        card.pack(padx=1, pady=1)
-        make_gradient_canvas_h(card, height=4, c1=PURPLE, c2=CYAN).pack(fill="x")
-        tk.Label(card, text="🖥", bg=BG2, fg=PURPLE,
-                 font=(FD, 36)).pack(pady=(30, 0))
-        tk.Label(card, text="TimeNet Cafe", bg=BG2, fg=TEXT,
-                 font=(FD, 22, "bold")).pack(pady=(6, 2))
-        tk.Label(card, text="Sign in to your account", bg=BG2, fg=TEXT2,
-                 font=(FB, 11)).pack(pady=(0, 20))
-        hsep(card).pack(fill="x", padx=36, pady=(0, 20))
-        form = tk.Frame(card, bg=BG2)
-        form.pack(padx=48, fill="x")
-        self.err = tk.Label(form, text="", fg=RED, bg=BG2,
-                            wraplength=340, font=(FB, 10), justify="left")
-        self.err.pack(fill="x", pady=(0, 8))
-        self.usr = tk.StringVar()
-        self.pwd = tk.StringVar()
-        tk.Label(form, text="USERNAME", fg=TEXT3, bg=BG2,
-                 font=(FB, 8, "bold")).pack(anchor="w", pady=(0, 3))
-        uf = tk.Frame(form, bg=BG4, highlightthickness=1,
-                      highlightbackground=BORDER2)
-        uf.pack(fill="x", pady=(0, 16))
-        eu = tk.Entry(uf, textvariable=self.usr, bg=BG4, fg=TEXT,
-                      insertbackground=PURPLE, font=(FB, 12), relief="flat")
-        eu.pack(padx=14, pady=10, fill="x")
-        eu.bind("<FocusIn>",  lambda _: uf.config(highlightbackground=PURPLE))
-        eu.bind("<FocusOut>", lambda _: uf.config(highlightbackground=BORDER2))
-        self.after(100, eu.focus_set)
-        tk.Label(form, text="PASSWORD", fg=TEXT3, bg=BG2,
-                 font=(FB, 8, "bold")).pack(anchor="w", pady=(0, 3))
-        pf = tk.Frame(form, bg=BG4, highlightthickness=1,
-                      highlightbackground=BORDER2)
-        pf.pack(fill="x", pady=(0, 16))
-        ep = tk.Entry(pf, textvariable=self.pwd, show="●",
-                      bg=BG4, fg=TEXT, insertbackground=PURPLE,
-                      font=(FB, 12), relief="flat")
-        ep.pack(padx=14, pady=10, fill="x")
-        ep.bind("<FocusIn>",  lambda _: pf.config(highlightbackground=PURPLE))
-        ep.bind("<FocusOut>", lambda _: pf.config(highlightbackground=BORDER2))
-        ep.bind("<Return>",   lambda _: self._login())
-        eu.bind("<Return>",   lambda _: ep.focus_set())
-        self.sign_btn = tk.Button(
-            form, text="Sign In →", command=self._login,
-            bg=PURPLE, fg=TEXT, font=(FD, 12, "bold"),
-            relief="flat", cursor="hand2",
-            activebackground=PURPLE2, activeforeground=TEXT,
-            padx=20, pady=14)
-        self.sign_btn.pack(fill="x", pady=(0, 6))
-        hsep(card).pack(fill="x", padx=36, pady=20)
-        footer = tk.Frame(card, bg=BG2)
-        footer.pack(pady=(0, 28))
-        tk.Label(footer, text="New here? ", fg=TEXT2, bg=BG2,
-                 font=(FB, 10)).pack(side="left")
-        rl = tk.Label(footer, text="Create an account", fg=CYAN, bg=BG2,
-                      cursor="hand2", font=(FB, 10, "bold"))
-        rl.pack(side="left")
-        rl.bind("<Button-1>", lambda _: self.app.show_register())
-
-    def _login(self):
-        u = self.usr.get().strip()
-        p = self.pwd.get().strip()
-        if not u or not p:
-            self._show_msg("⚠  Please fill in all fields.")
-            return
-        self.sign_btn.config(state="disabled",
-                             bg=BG4, fg=TEXT3,
-                             text="⏳  Logging in…",
-                             activebackground=BG4)
-        self._show_msg("⏳  Logging in…", color=CYAN, auto_clear=False)
-        self.update_idletasks()
-
-        def _do_login():
-            rows = db_exec(
-                "SELECT * FROM users WHERE username=%s AND password=%s",
-                (u, p), fetch=True)
-            self.after(0, lambda: self._finish_login(rows))
-
-        threading.Thread(target=_do_login, daemon=True).start()
-
-    def _finish_login(self, rows):
-        self.sign_btn.config(state="normal",
-                             bg=PURPLE, fg=TEXT,
-                             text="Sign In →",
-                             activebackground=PURPLE2)
-        if rows:
-            user = dict(rows[0])
-            if user.get("role") == "admin":
-                self._show_msg("✗  Use the Admin portal for admin accounts.")
-                return
-            self._show_msg("✅  Welcome back! Loading…", color=GREEN, auto_clear=False)
-            Auth.login(user)
-            self.after(800, self.app.show_customer_dashboard)
-        else:
-            self._show_msg("✗  Invalid username or password.")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -2197,8 +2683,17 @@ class AddTimeDialog(tk.Toplevel):
             outer_card.grid(row=0, column=ci, padx=4, pady=4, sticky="nsew")
             inner_card = tk.Frame(outer_card, bg=BG4 if is_sel else BG3)
             inner_card.pack(fill="both", expand=True, padx=2, pady=2)
-            il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
-                          fg=color, font=(FD, 18))
+            if val in ("gcash", "maya"):
+                png_icon = get_method_icon(val, size=(28, 28))
+                if png_icon:
+                    il = tk.Label(inner_card, image=png_icon, bg=inner_card["bg"])
+                    inner_card._icon_ref = png_icon
+                else:
+                    il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                                  fg=color, font=(FD, 18))
+            else:
+                il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                              fg=color, font=(FD, 18))
             il.pack(pady=(10, 2))
             nl = tk.Label(inner_card, text=lbl_txt, bg=inner_card["bg"],
                           fg=TEXT, font=(FB, 9, "bold"))
@@ -2437,8 +2932,17 @@ class PaymentDialog(tk.Toplevel):
             outer_card.grid(row=0, column=ci, padx=5, pady=4, sticky="nsew")
             inner_card = tk.Frame(outer_card, bg=BG4 if is_sel else BG3)
             inner_card.pack(fill="both", expand=True, padx=2, pady=2)
-            il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
-                          fg=color, font=(FD, 22))
+            if val in ("gcash", "maya"):
+                png_icon = get_method_icon(val, size=(32, 32))
+                if png_icon:
+                    il = tk.Label(inner_card, image=png_icon, bg=inner_card["bg"])
+                    inner_card._icon_ref = png_icon
+                else:
+                    il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                                  fg=color, font=(FD, 22))
+            else:
+                il = tk.Label(inner_card, text=icon, bg=inner_card["bg"],
+                              fg=color, font=(FD, 22))
             il.pack(pady=(14, 2))
             nl = tk.Label(inner_card, text=lbl_txt, bg=inner_card["bg"],
                           fg=TEXT, font=(FB, 11, "bold"))
@@ -2523,9 +3027,8 @@ class PaymentDialog(tk.Toplevel):
                 self.on_complete()
 
         def _cancelled():
-            db_exec(
-                "UPDATE sessions SET status='cancelled' WHERE id=%s",
-                (session_id,))
+            db_exec("UPDATE sessions SET status='cancelled' WHERE id=%s",
+                    (session_id,))
             if isinstance(self.app.current_frame, CustomerDashboard):
                 d = self.app.current_frame
                 d.selected_tier  = None
@@ -2624,6 +3127,12 @@ class PaymentDialog(tk.Toplevel):
 # ════════════════════════════════════════════════════════════════════
 
 class CustomerDashboard(tk.Frame):
+    # ── Poll intervals ────────────────────────────────────────────
+    # Reduced from 2000 ms to 1000 ms for faster admin→customer sync.
+    # DB queries run in a background thread so UI never blocks.
+    _POLL_INTERVAL_MS  = 1000   # how often to poll the DB
+    _TICK_DB_REFRESH_S = 5      # how often the live tick refreshes duration from DB
+
     def __init__(self, parent, app):
         super().__init__(parent, bg=BG)
         self.app                 = app
@@ -2638,9 +3147,14 @@ class CustomerDashboard(tk.Frame):
         self._last_booking_state = None
         self._view_mode          = None
         self._force_loading      = False
+        self._destroyed          = False
         self._build()
         self._load_data()
         self._poll()
+
+    def destroy(self):
+        self._destroyed = True
+        super().destroy()
 
     def _build(self):
         self.hdr = tk.Frame(self, bg=BG2)
@@ -2673,13 +3187,19 @@ class CustomerDashboard(tk.Frame):
         for w in self.content.winfo_children():
             w.destroy()
 
-    def _get_this_pc(self):
-        return get_this_computer()
-
     def _show_booking(self):
         self._clear_content()
 
-        computer = self._get_this_pc()
+        computer = get_this_computer()
+
+        # DB unreachable — don't destroy the current view
+        if computer == "DB_ERROR":
+            self._view_mode = "no_computers"
+            self._show_no_computers(
+                title="Database Unreachable",
+                body="Cannot connect to the database.\n"
+                     "Please check VPN/network and try again.")
+            return
 
         if computer is None:
             self._view_mode = "no_computers"
@@ -2759,8 +3279,7 @@ class CustomerDashboard(tk.Frame):
             f.grid(row=rn, column=cn, padx=5, pady=5, sticky="nsew")
             f.pack_propagate(False)
             grid.columnconfigure(cn, weight=1)
-            l1 = tk.Label(f, text=tier["label"], bg=BG3, fg=TEXT2,
-                          font=(FB, 9))
+            l1 = tk.Label(f, text=tier["label"], bg=BG3, fg=TEXT2, font=(FB, 9))
             l1.pack(pady=(16, 2))
             l2 = tk.Label(f, text=fmt_currency(cost), bg=BG3, fg=GREEN,
                           font=(FD, 13, "bold"))
@@ -2783,8 +3302,7 @@ class CustomerDashboard(tk.Frame):
                            body="All PCs are currently in use."):
         c = tk.Frame(self.content, bg=BG)
         c.place(relx=0.5, rely=0.5, anchor="center")
-        tk.Label(c, text="🖥", font=(FD, 56), bg=BG,
-                 fg=TEXT3).pack(pady=(0, 10))
+        tk.Label(c, text="🖥", font=(FD, 56), bg=BG, fg=TEXT3).pack(pady=(0, 10))
         tk.Label(c, text=title, bg=BG, fg=TEXT,
                  font=(FD, 20, "bold")).pack()
         tk.Label(c, text=body, fg=TEXT2, bg=BG,
@@ -2795,11 +3313,8 @@ class CustomerDashboard(tk.Frame):
         self._view_mode = "paused"
         sess = self.paused_session
 
-        remain_hms   = sess.get("pausedRemainDisp") or fmt_sec_to_hms(
-            sess.get("pausedRemain", 0))
-        remain_human = sess.get("pausedRemainHuman") or fmt_sec_to_display(
-            sess.get("pausedRemain", 0))
-        paused_at_str = sess.get("pausedAtDisp", "—")
+        remain_sec_init = int(sess.get("pausedRemain", 0))
+        paused_at_str   = sess.get("pausedAtDisp", "—")
 
         make_bg_canvas(self.content)
         wrap = tk.Frame(self.content, bg=BG)
@@ -2831,10 +3346,39 @@ class CustomerDashboard(tk.Frame):
         tr.pack_propagate(False)
         tk.Label(tr, text="TIME REMAINING", fg=TEXT3, bg=BG3,
                  font=(FB, 9, "bold")).pack(pady=(18, 4))
-        tk.Label(tr, text=remain_hms, fg=ORANGE, bg=BG3,
-                 font=(FM, 40, "bold")).pack()
-        tk.Label(tr, text=remain_human, fg=TEXT2, bg=BG3,
-                 font=(FB, 11)).pack(pady=(2, 0))
+
+        self._paused_remain_sec = [remain_sec_init]
+        self._paused_tick_gen   = getattr(self, "_paused_tick_gen", 0) + 1
+        my_paused_gen           = self._paused_tick_gen
+
+        hms_lbl = tk.Label(tr, text=fmt_sec_to_hms(remain_sec_init),
+                            fg=ORANGE, bg=BG3, font=(FM, 40, "bold"))
+        hms_lbl.pack()
+        human_lbl = tk.Label(tr, text=fmt_sec_to_display(remain_sec_init),
+                             fg=TEXT2, bg=BG3, font=(FB, 11))
+        human_lbl.pack(pady=(2, 0))
+
+        def _tick_paused():
+            if getattr(self, "_paused_tick_gen", 0) != my_paused_gen:
+                return
+            if self._view_mode != "paused":
+                return
+            try:
+                if not hms_lbl.winfo_exists():
+                    return
+            except Exception:
+                return
+            if self._paused_remain_sec[0] > 0:
+                self._paused_remain_sec[0] -= 1
+            sec = self._paused_remain_sec[0]
+            try:
+                hms_lbl.config(text=fmt_sec_to_hms(sec))
+                human_lbl.config(text=fmt_sec_to_display(sec))
+            except Exception:
+                return
+            self.after(1000, _tick_paused)
+
+        self.after(1000, _tick_paused)
 
         comp_rows = db_exec("SELECT * FROM computers WHERE id=%s",
                             (sess.get("computerId", ""),), fetch=True) or []
@@ -2879,7 +3423,6 @@ class CustomerDashboard(tk.Frame):
                     l2.config(bg=BG3, fg=GREEN)
                 except Exception:
                     pass
-
         self.selected_tier = minutes
         f, l1, l2 = self.tier_btns[minutes]
         f.config(bg=PURPLE_DIM, highlightbackground=PURPLE)
@@ -3021,10 +3564,8 @@ class CustomerDashboard(tk.Frame):
             padx=8, pady=6,
             highlightthickness=1, highlightbackground=ORANGE)
         pause_btn.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        pause_btn.bind("<Enter>",
-                       lambda _: pause_btn.config(bg=ORANGE, fg=BG))
-        pause_btn.bind("<Leave>",
-                       lambda _: pause_btn.config(bg=ORANGE_DIM, fg=ORANGE))
+        pause_btn.bind("<Enter>", lambda _: pause_btn.config(bg=ORANGE, fg=BG))
+        pause_btn.bind("<Leave>", lambda _: pause_btn.config(bg=ORANGE_DIM, fg=ORANGE))
 
         add_btn = tk.Button(
             btn_row,
@@ -3091,7 +3632,12 @@ class CustomerDashboard(tk.Frame):
         remain_sec = sess.get("pausedRemain", 0)
         duration   = sess.get("duration", 0)
 
-        computer = self._get_this_pc()
+        computer = get_this_computer()
+        if computer == "DB_ERROR":
+            ThemedDialog(self.app, kind="error",
+                         title="Database Error",
+                         message="Cannot reach database. Please check VPN/network.")
+            return
         if computer is None or computer["status"] != "available":
             computers = db_exec("SELECT * FROM computers", fetch=True) or []
             available = [c for c in computers if c["status"] == "available"]
@@ -3156,20 +3702,34 @@ class CustomerDashboard(tk.Frame):
             self._ticking = False
             return
 
-        n = now_ms()
-        if n - self._db_refresh_time >= 5_000:
-            self._db_refresh_time = n
-            rows = db_exec(
-                "SELECT duration, start_time FROM sessions WHERE id=%s",
-                (self.active_session["id"],), fetch=True)
-            if rows:
+        # Periodic DB refresh (background thread)
+        now_ms_val = now_ms()
+        if now_ms_val - self._db_refresh_time >= self._TICK_DB_REFRESH_S * 1000:
+            self._db_refresh_time = now_ms_val
+            sess_id = self.active_session["id"]
+
+            def _refresh_db():
+                rows, err = db_exec_safe(
+                    "SELECT duration, start_time FROM sessions WHERE id=%s",
+                    (sess_id,), fetch=True)
+                if err or not rows:
+                    # DB error — keep current values, don't reset session
+                    return
                 new_dur   = int(rows[0]["duration"])
                 new_start = _dt_to_ms(rows[0]["start_time"])
-                if new_dur != self.active_session["duration"]:
-                    self.active_session["duration"] = new_dur
-                if new_start and new_start != self.active_session.get("startTime"):
-                    self.active_session["startTime"] = new_start
 
+                def _apply():
+                    if not self.active_session or self.active_session["id"] != sess_id:
+                        return
+                    if new_dur != self.active_session.get("duration"):
+                        self.active_session["duration"] = new_dur
+                    if new_start and new_start != self.active_session.get("startTime"):
+                        self.active_session["startTime"] = new_start
+                self.after(0, _apply)
+
+            threading.Thread(target=_refresh_db, daemon=True).start()
+
+        # Countdown using wall-clock (drift-free)
         total_min = self.active_session.get("duration", 60)
         start_ms  = self.active_session.get("startTime") or now_ms()
         end_ms    = start_ms + total_min * 60 * 1000
@@ -3248,9 +3808,13 @@ class CustomerDashboard(tk.Frame):
         if not Auth.user:
             self._force_loading = False
             return
-        rows = db_exec(
+        rows, err = db_exec_safe(
             "SELECT * FROM sessions WHERE username=%s AND status='active'",
             (Auth.username(),), fetch=True)
+        if err:
+            # DB error — retry after delay instead of giving up
+            self.after(800, self._do_force_poll)
+            return
         if not rows:
             self.after(400, self._do_force_poll)
             return
@@ -3265,14 +3829,23 @@ class CustomerDashboard(tk.Frame):
         self._show_active_session()
 
     def _load_data(self):
+        """
+        Synchronous initial load (called at startup and on state changes).
+        Uses db_exec_safe so a DB error doesn't falsely reset the view.
+        """
         if not Auth.user:
             return
         uname = Auth.username()
 
-        rows   = db_exec(
+        active_rows, err = db_exec_safe(
             "SELECT * FROM sessions WHERE username=%s AND status='active'",
             (uname,), fetch=True)
-        active = norm_session(rows[0]) if rows else None
+
+        if err:
+            # DB unreachable — don't disturb current view
+            return
+
+        active = norm_session(active_rows[0]) if active_rows else None
 
         if active:
             if (self._view_mode == "active"
@@ -3291,9 +3864,13 @@ class CustomerDashboard(tk.Frame):
             self._show_active_session()
             return
 
-        paused_rows = db_exec(
+        paused_rows, err2 = db_exec_safe(
             "SELECT * FROM sessions WHERE username=%s AND status='paused'",
             (uname,), fetch=True)
+
+        if err2:
+            return
+
         paused = norm_session(paused_rows[0]) if paused_rows else None
 
         if paused:
@@ -3323,14 +3900,19 @@ class CustomerDashboard(tk.Frame):
             self._show_paused_session()
             return
 
-        computer  = self._get_this_pc()
+        computer = get_this_computer()
+
+        if computer == "DB_ERROR":
+            # Don't flip to "no_computers" just because DB hiccupped
+            return
+
         pc_status = computer["status"] if computer else "not_found"
         pc_id     = computer["id"]     if computer else THIS_COMPUTER_ID
         new_state = (pc_status, pc_id)
 
         if self._view_mode == "active":
-            self._ticking        = False
-            self._tick_gen      += 1
+            self._ticking         = False
+            self._tick_gen       += 1
             self._db_refresh_time = 0
             try:
                 self.hdr.pack(fill="x", before=self.content)
@@ -3374,257 +3956,161 @@ class CustomerDashboard(tk.Frame):
             self._show_booking()
 
     def _poll(self):
-        self._load_data()
-        self.after(2000, self._poll)
+        """
+        Background poll — runs every _POLL_INTERVAL_MS.
+        Uses db_exec_safe for all queries so a DB error (VPN drop, timeout)
+        never falsely clears the active session or kicks the customer out.
+        """
+        if self._destroyed:
+            return
+
+        def _bg():
+            try:
+                uname = Auth.username() if Auth.user else None
+                if not uname:
+                    return
+                active_rows, a_err = db_exec_safe(
+                    "SELECT * FROM sessions WHERE username=%s AND status='active'",
+                    (uname,), fetch=True)
+                paused_rows, p_err = db_exec_safe(
+                    "SELECT * FROM sessions WHERE username=%s AND status='paused'",
+                    (uname,), fetch=True)
+                computer_rows, c_err = db_exec_safe(
+                    "SELECT * FROM computers WHERE id=%s",
+                    (THIS_COMPUTER_ID,), fetch=True)
+
+                # If any critical query failed, skip this poll cycle entirely
+                # to avoid false state transitions
+                if a_err or p_err or c_err:
+                    return
+
+                self.after(0, lambda ar=active_rows, pr=paused_rows, cr=computer_rows:
+                           self._apply_poll_result(ar, pr, cr))
+            except Exception as e:
+                print(f"[CustomerDashboard._poll] {e}")
+
+        threading.Thread(target=_bg, daemon=True).start()
+        if not self._destroyed:
+            self.after(self._POLL_INTERVAL_MS, self._poll)
+
+    def _apply_poll_result(self, active_rows, paused_rows, computer_rows):
+        """Apply poll results on the main Tkinter thread."""
+        if not Auth.user or self._destroyed:
+            return
+
+        active   = norm_session(active_rows[0])   if active_rows   else None
+        paused   = norm_session(paused_rows[0])   if paused_rows   else None
+        computer = computer_rows[0]               if computer_rows else None
+
+        if active:
+            if (self._view_mode == "active"
+                    and self._last_session_id == active["id"]
+                    and self._ticking):
+                # Same session running — sync duration and start_time for add-time
+                self.active_session["duration"] = active["duration"]
+                new_st = active.get("startTime")
+                if new_st and new_st != self.active_session.get("startTime"):
+                    self.active_session["startTime"] = new_st
+                return
+
+            self._ticking         = False
+            self._tick_gen       += 1
+            self._db_refresh_time = 0
+            self.active_session   = active
+            self.paused_session   = None
+            self._last_session_id = active["id"]
+            self._view_mode       = "active"
+            self._show_active_session()
+            return
+
+        if paused:
+            if self._view_mode == "active":
+                try:
+                    self.hdr.pack(fill="x", before=self.content)
+                    self.hdr_sep.pack(fill="x", before=self.content)
+                except Exception:
+                    self.hdr.pack(fill="x")
+                    self.hdr_sep.pack(fill="x")
+            try:
+                self.logout_btn.pack(side="right")
+                self.welcome_lbl.config(
+                    text=f"Welcome back, {Auth.username()}" if Auth.user else "")
+            except Exception:
+                pass
+
+            if (self._view_mode == "paused"
+                    and self.paused_session
+                    and self.paused_session["id"] == paused["id"]):
+                db_remain = paused.get("pausedRemain", 0)
+                if hasattr(self, "_paused_remain_sec") and self._paused_remain_sec:
+                    if db_remain < self._paused_remain_sec[0]:
+                        self._paused_remain_sec[0] = db_remain
+                return
+
+            self._ticking         = False
+            self._tick_gen       += 1
+            self._db_refresh_time = 0
+            self.active_session   = None
+            self.paused_session   = paused
+            self._last_session_id = paused["id"]
+            self._view_mode       = "paused"
+            self._show_paused_session()
+            return
+
+        pc_status = computer["status"] if computer else "not_found"
+        pc_id     = computer["id"]     if computer else THIS_COMPUTER_ID
+        new_state = (pc_status, pc_id)
+
+        if self._view_mode == "active":
+            self._ticking         = False
+            self._tick_gen       += 1
+            self._db_refresh_time = 0
+            try:
+                self.hdr.pack(fill="x", before=self.content)
+                self.hdr_sep.pack(fill="x", before=self.content)
+            except Exception:
+                self.hdr.pack(fill="x")
+                self.hdr_sep.pack(fill="x")
+
+        try:
+            self.logout_btn.pack(side="right")
+            self.welcome_lbl.config(
+                text=f"Welcome back, {Auth.username()}" if Auth.user else "")
+        except Exception:
+            pass
+
+        if (self._view_mode in ("booking", "no_computers")
+                and self._last_booking_state == new_state):
+            return
+
+        self._ticking            = False
+        self._tick_gen          += 1
+        self._db_refresh_time    = 0
+        self.active_session      = None
+        self.paused_session      = None
+        self._last_session_id    = None
+        self._last_booking_state = new_state
+
+        if computer is None or pc_status != "available":
+            self._view_mode = "no_computers"
+            self._clear_content()
+            if computer is None:
+                self._show_no_computers(
+                    title="Computer Not Found",
+                    body=f"Kiosk ID '{THIS_COMPUTER_ID}' is not in the system.\n"
+                         f"Please contact staff.")
+            else:
+                self._show_no_computers(
+                    title=f"{computer['name']} is Unavailable",
+                    body=f"Status: {pc_status}.\nPlease wait or contact staff.")
+        else:
+            self.assigned_computer = computer
+            self._view_mode        = "booking"
+            self.selected_tier     = None
+            self._show_booking()
 
     def _logout(self):
         self.app.logout()
-
-
-# ════════════════════════════════════════════════════════════════════
-#  MAIN APP WINDOW
-# ════════════════════════════════════════════════════════════════════
-
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("TimeNet Cafe")
-        self.configure(bg=BG)
-        self._locked             = True
-        self._tray_active        = False
-        self._session_win        = None
-        self._taskbar_proxy      = None
-        self._taskbar_enforce_on = False
-
-        # Install low-level keyboard hook BEFORE any UI
-        install_keyboard_hook()
-
-        self._apply_lock()
-        self._setup_ttk()
-        self._set_timenet_icon()
-        self.container = tk.Frame(self, bg=BG)
-        self.container.pack(fill="both", expand=True)
-        self.current_frame = None
-        self.show_login()
-
-        # Admin-only escape via Ctrl+Shift+A
-        self.bind_all("<Control-Shift-A>", lambda _: self._admin_exit())
-
-        # Block ALL window-close attempts
-        self.protocol("WM_DELETE_WINDOW", lambda: None)
-
-        paymongo.app = self
-
-        # Periodic focus enforcer — recapture focus if anything else steals it
-        self._enforce_focus()
-
-    # ── Focus enforcer ───────────────────────────────────────────────
-
-    def _enforce_focus(self):
-        """Re-assert window position every 2 s while locked, but ONLY if
-        no Entry / Text widget inside our own app currently has focus.
-        This prevents stealing keyboard input from the user."""
-        if self._locked:
-            try:
-                focused = self.focus_get()
-                # Only forcibly raise/focus if nothing in our app has focus
-                if focused is None or not isinstance(focused, (tk.Entry, tk.Text)):
-                    self.lift()
-                    # Don't call focus_force() – that always breaks typing
-            except Exception:
-                pass
-        self.after(2000, self._enforce_focus)
-
-    # ── Icon ─────────────────────────────────────────────────────────
-
-    def _set_timenet_icon(self, target=None):
-        win = target or self
-        try:
-            from PIL import ImageTk
-            img   = make_timenet_icon_image()
-            photo = ImageTk.PhotoImage(img)
-            win.iconphoto(True, photo)
-            if win is self:
-                self._icon_photo = photo
-            else:
-                win._icon_photo = photo
-        except Exception as e:
-            print(f"[Icon] {e}")
-
-    def _on_payment_success(self, info):
-        if isinstance(self.current_frame, CustomerDashboard):
-            self.current_frame._force_load_session()
-
-    # ── Lock / Unlock ─────────────────────────────────────────────────
-
-    def _apply_lock(self):
-        self._locked             = True
-        self._taskbar_enforce_on = True
-        set_lockdown(True)          # keyboard hook + taskbar + task manager
-        self._taskbar_enforce()
-
-        self.protocol("WM_DELETE_WINDOW", lambda: None)
-        self.overrideredirect(False)
-        self.update_idletasks()
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"{sw}x{sh}+0+0")
-        self.update_idletasks()
-        self.overrideredirect(True)
-        self.update_idletasks()
-        self.lift()
-        self.focus_force()
-        self.attributes("-topmost", True)
-        self.after(500, lambda: self.attributes("-topmost", False))
-
-    def _taskbar_enforce(self):
-        if not self._taskbar_enforce_on:
-            return
-        _set_taskbar(False)
-        self.after(500, self._taskbar_enforce)
-
-    def unlock_for_session(self):
-        if not self._locked:
-            return
-        self._locked              = False
-        self._taskbar_enforce_on  = False
-        set_lockdown(False)         # re-enable keyboard + taskbar
-
-        self.overrideredirect(False)
-        self.update_idletasks()
-        self.withdraw()
-
-        proxy = tk.Toplevel(self)
-        proxy.title("TimeNet Cafe — Session Timer")
-        proxy.configure(bg=BG)
-        proxy.geometry("1x1+-32000+-32000")
-        proxy.resizable(False, False)
-        proxy.protocol("WM_DELETE_WINDOW", lambda: None)
-        self._set_timenet_icon(proxy)
-        proxy.update_idletasks()
-        self._taskbar_proxy = proxy
-
-        w, h = 300, 210
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        win = tk.Toplevel(self)
-        win.overrideredirect(True)
-        win.attributes("-topmost", True)
-        win.resizable(False, False)
-        win.configure(bg=BG2)
-        win.protocol("WM_DELETE_WINDOW", lambda: None)
-        win.geometry(f"{w}x{h}+{sw-w-12}+{sh-h-48}")
-        win.update_idletasks()
-        self._session_win = win
-
-        proxy.bind("<Unmap>", lambda e: self._on_proxy_unmap())
-        proxy.bind("<Map>",   lambda e: self._on_proxy_map())
-
-        if isinstance(self.current_frame, CustomerDashboard):
-            self.current_frame._render_session_into(win)
-
-    def _on_proxy_unmap(self):
-        try:
-            if self._session_win:
-                self._session_win.withdraw()
-        except Exception:
-            pass
-
-    def _on_proxy_map(self):
-        try:
-            if self._session_win:
-                self._session_win.deiconify()
-                self._session_win.lift()
-                self._session_win.attributes("-topmost", True)
-        except Exception:
-            pass
-
-    def relock(self):
-        self._taskbar_enforce_on = False
-        self.attributes("-topmost", False)
-
-        for attr in ("_session_win", "_taskbar_proxy"):
-            w = getattr(self, attr, None)
-            if w:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
-                setattr(self, attr, None)
-
-        if self._tray_active:
-            self._tray_active = False
-            stop_tray()
-
-        self.deiconify()
-        self.overrideredirect(False)
-        self.resizable(True, True)
-        self.update_idletasks()
-        self._apply_lock()
-
-    # ── Admin exit ───────────────────────────────────────────────────
-
-    def _admin_exit(self):
-        def _do():
-            self._taskbar_enforce_on = False
-            set_lockdown(False)
-            uninstall_keyboard_hook()
-            stop_tray()
-            for attr in ("_session_win", "_taskbar_proxy"):
-                w = getattr(self, attr, None)
-                if w:
-                    try:
-                        w.destroy()
-                    except Exception:
-                        pass
-            self.destroy()
-        AdminPinDialog(self, on_success=_do)
-
-    # ── TTK styles ───────────────────────────────────────────────────
-
-    def _setup_ttk(self):
-        s = ttk.Style(self)
-        s.theme_use("clam")
-        s.configure("Treeview",
-                    background=BG2, foreground=TEXT,
-                    fieldbackground=BG2, bordercolor=BORDER,
-                    rowheight=32, font=(FB, 10))
-        s.configure("Treeview.Heading",
-                    background=BG3, foreground=TEXT2,
-                    relief="flat", font=(FB, 10, "bold"), borderwidth=0)
-        s.map("Treeview",
-              background=[("selected", "#0d2a42")],
-              foreground=[("selected", PURPLE)])
-        s.configure("TScrollbar",
-                    background=BG4, troughcolor=BG2,
-                    bordercolor=BG, arrowcolor=TEXT3, relief="flat")
-        s.configure("Session.Horizontal.TProgressbar",
-                    troughcolor=BG3, background=PURPLE,
-                    thickness=8, bordercolor=BG3)
-
-    # ── Frame switching ──────────────────────────────────────────────
-
-    def switch_frame(self, cls, *a, **kw):
-        if self.current_frame:
-            self.current_frame.destroy()
-        f = cls(self.container, self, *a, **kw)
-        f.pack(fill="both", expand=True)
-        self.current_frame = f
-
-    def show_login(self):
-        self.switch_frame(LoginPage)
-
-    def show_register(self):
-        self.switch_frame(RegisterPage)
-
-    def show_customer_dashboard(self):
-        self.switch_frame(CustomerDashboard)
-
-    def logout(self):
-        Auth.logout()
-        if not self._locked:
-            self.relock()
-        else:
-            _set_taskbar(False)
-        self.show_login()
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -3632,16 +4118,5 @@ class App(tk.Tk):
 # ════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    if platform.system() == "Windows":
-        try:
-            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
-        except Exception:
-            is_admin = False
-        if not is_admin:
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable,
-                " ".join(f'"{a}"' for a in sys.argv), None, 1)
-            sys.exit(0)
-
     app = App()
     app.mainloop()
