@@ -18,16 +18,10 @@ from mysql.connector import pooling
 #  CONFIG
 # ════════════════════════════════════════════════════════════════════
 
-# ── REMOTE / VPN SETUP ──────────────────────────────────────────────
-#  Set DB_HOST to the VPN/LAN IP of the PC running MySQL/XAMPP.
-#  e.g. "192.168.1.x"  or  "10.8.0.x"
-#  Leave as "localhost" ONLY if customer.py runs on the SAME machine
-#  as MySQL.
-# ────────────────────────────────────────────────────────────────────
-DB_HOST     = "localhost"   # ← change to VPN/LAN IP of MySQL server
+DB_HOST     = "localhost"
 DB_PORT     = 3306
-DB_USER     = "root"
-DB_PASSWORD = ""
+DB_USER     = "remoteuser"
+DB_PASSWORD = "123456"
 DB_NAME     = "timenet"
 
 DB_CONFIG = {
@@ -36,7 +30,7 @@ DB_CONFIG = {
     "user":               DB_USER,
     "password":           DB_PASSWORD,
     "database":           DB_NAME,
-    "connect_timeout":    8,   # prevents hanging on VPN dead TCP
+    "connect_timeout":    8,
     "connection_timeout": 8,
     "autocommit":         False,
 }
@@ -146,17 +140,7 @@ def get_method_icon(method, size=(32, 32)):
     return None
 
 # ════════════════════════════════════════════════════════════════════
-#  DATABASE LAYER — VPN/remote-hardened
-#
-#  Key fixes vs original:
-#   1. Per-call raw connections (no shared pool that silently dies).
-#   2. ping(reconnect=True) before every query — detects dead TCP.
-#   3. connect_timeout=8 prevents indefinite hangs over VPN.
-#   4. _pool reset to None on first error → next call rebuilds it.
-#   5. db_exec returns [] on fetch error (not None) so callers can
-#      distinguish "DB error" from "empty result" via db_exec_safe.
-#   6. db_exec_safe returns (result, error_string) for critical paths.
-#   7. db_online flag updated so UI can show connection status.
+#  DATABASE LAYER
 # ════════════════════════════════════════════════════════════════════
 
 _pool       = None
@@ -170,7 +154,6 @@ def _notify_db_status(ok: bool):
 
 
 def _make_pool():
-    """Create a fresh connection pool. Returns pool or None on failure."""
     try:
         p = pooling.MySQLConnectionPool(
             pool_name="timenet_customer",
@@ -194,20 +177,12 @@ def get_pool():
 
 
 def _reset_pool():
-    """Discard the current pool so the next call rebuilds it."""
     global _pool
     with _pool_lock:
         _pool = None
 
 
 def db_exec(query, params=(), fetch=False):
-    """
-    Execute a query.
-    Returns rows (list[dict]) when fetch=True, else None.
-    Returns [] / None on error — callers must not treat [] as "no rows"
-    for critical decisions; use db_exec_safe for those.
-    Automatically pings and reconnects broken connections.
-    """
     conn = cur = None
     try:
         pool = get_pool()
@@ -271,12 +246,6 @@ def db_exec(query, params=(), fetch=False):
 
 
 def db_exec_safe(query, params=(), fetch=False):
-    """
-    Like db_exec but returns (result, error_string).
-    error_string is None on success.
-    Use this for writes and critical reads where you must
-    distinguish a DB error from a legitimately empty result.
-    """
     conn = cur = None
     try:
         pool = get_pool()
@@ -492,7 +461,6 @@ def get_this_computer():
         "SELECT * FROM computers WHERE id=%s",
         (THIS_COMPUTER_ID,), fetch=True)
     if err:
-        # DB unreachable — return sentinel so callers don't think PC is gone
         return "DB_ERROR"
     return rows[0] if rows else None
 
@@ -802,6 +770,130 @@ class ThemedDialog(tk.Toplevel):
 
 
 # ════════════════════════════════════════════════════════════════════
+#  ACCOUNT DELETED DIALOG  ← NEW
+# ════════════════════════════════════════════════════════════════════
+
+class AccountDeletedDialog(tk.Toplevel):
+    """
+    Shown when the admin deletes the currently-logged-in customer account.
+    Offers two choices:
+      • Re-create Account  → goes to RegisterPage
+      • Ask the Admin      → logs out to LoginPage with a note
+    Cannot be dismissed any other way (no ESC, no close button).
+    """
+    def __init__(self, app, username, on_register, on_ask_admin):
+        super().__init__(app)
+        self.app          = app
+        self.username     = username
+        self.on_register  = on_register
+        self.on_ask_admin = on_ask_admin
+        self.configure(bg=BG2)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.grab_set()
+        # Block all dismiss shortcuts
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._build()
+        self.update_idletasks()
+        w, h = 520, 480
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
+        self.update_idletasks()
+        add_gradient_border(self, thickness=3, c1=RED, c2=PURPLE)
+
+    def _build(self):
+        inner = tk.Frame(self, bg=BG2)
+        inner.place(x=3, y=3, relwidth=1, relheight=1, width=-6, height=-6)
+
+        # Icon badge
+        badge = tk.Frame(inner, bg=RED_DIM, highlightthickness=2,
+                         highlightbackground=RED, width=80, height=80)
+        badge.pack(pady=(32, 0))
+        badge.pack_propagate(False)
+        tk.Label(badge, text="🗑", bg=RED_DIM, fg=RED,
+                 font=(FD, 32)).place(relx=0.5, rely=0.5, anchor="center")
+
+        tk.Label(inner, text="Account Deleted", bg=BG2, fg=TEXT,
+                 font=(FD, 18, "bold")).pack(pady=(16, 4))
+
+        tk.Label(inner,
+                 text=f'Your account  "{self.username}"  has been\n'
+                      f'removed by the administrator.',
+                 bg=BG2, fg=TEXT2, font=(FB, 11),
+                 justify="center").pack(padx=40, pady=(0, 6))
+
+        hsep(inner, BORDER2).pack(fill="x", padx=32, pady=(14, 0))
+
+        info_card = tk.Frame(inner, bg=BG3, highlightthickness=1,
+                             highlightbackground=BORDER2)
+        info_card.pack(padx=32, pady=14, fill="x")
+        tk.Label(info_card,
+                 text="What would you like to do?",
+                 bg=BG3, fg=TEXT3, font=(FB, 9, "bold")).pack(
+            pady=(12, 4))
+        tk.Label(info_card,
+                 text="You can create a brand-new account with a new username,\n"
+                      "or speak to a staff member to have your account restored.",
+                 bg=BG3, fg=TEXT2, font=(FB, 9),
+                 justify="center", wraplength=420).pack(
+            padx=16, pady=(0, 12))
+
+        hsep(inner, BORDER2).pack(fill="x", padx=32, pady=(0, 18))
+
+        btn_frame = tk.Frame(inner, bg=BG2)
+        btn_frame.pack(padx=32, fill="x")
+        btn_frame.columnconfigure(0, weight=1)
+        btn_frame.columnconfigure(1, weight=1)
+
+        # Re-create account button
+        reg_btn = tk.Button(
+            btn_frame,
+            text="✨  Re-create Account",
+            command=self._go_register,
+            bg=PURPLE, fg=TEXT,
+            font=(FD, 11, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=PURPLE2, activeforeground=TEXT,
+            padx=14, pady=16)
+        reg_btn.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        reg_btn.bind("<Enter>", lambda _: reg_btn.config(bg=PURPLE2))
+        reg_btn.bind("<Leave>", lambda _: reg_btn.config(bg=PURPLE))
+
+        # Ask the admin button
+        ask_btn = tk.Button(
+            btn_frame,
+            text="🛡  Ask the Admin",
+            command=self._go_ask_admin,
+            bg=BG4, fg=CYAN,
+            font=(FD, 11, "bold"),
+            relief="flat", cursor="hand2",
+            activebackground=BG5, activeforeground=TEXT,
+            highlightthickness=1, highlightbackground=CYAN,
+            padx=14, pady=16)
+        ask_btn.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        ask_btn.bind("<Enter>", lambda _: ask_btn.config(bg=BG5, fg=TEXT))
+        ask_btn.bind("<Leave>", lambda _: ask_btn.config(bg=BG4, fg=CYAN))
+
+    def _go_register(self):
+        try:
+            self.grab_release()
+            self.destroy()
+        except Exception:
+            pass
+        if self.on_register:
+            self.on_register()
+
+    def _go_ask_admin(self):
+        try:
+            self.grab_release()
+            self.destroy()
+        except Exception:
+            pass
+        if self.on_ask_admin:
+            self.on_ask_admin()
+
+
+# ════════════════════════════════════════════════════════════════════
 #  ADMIN PIN DIALOG
 # ════════════════════════════════════════════════════════════════════
 
@@ -970,12 +1062,10 @@ class CashVoucherDialog(tk.Toplevel):
     def _poll(self):
         if self._done:
             return
-        # Use db_exec_safe so a DB error doesn't falsely trigger activation
         rows, err = db_exec_safe(
             "SELECT status FROM sessions WHERE id=%s",
             (self.session_id,), fetch=True)
         if err:
-            # DB unreachable — keep waiting, try again
             self.after(1500, self._poll)
             return
         if rows and rows[0]["status"] == "active":
@@ -1457,6 +1547,7 @@ class App(tk.Tk):
         self._session_win        = None
         self._taskbar_proxy      = None
         self._unlocked_once      = False
+        self._account_deleted_shown = False   # ← guard: show dialog only once
         self._apply_lock()
         self._setup_ttk()
         self._set_timenet_icon()
@@ -1467,6 +1558,88 @@ class App(tk.Tk):
         self.bind_all("<Control-Shift-A>", lambda _: self._admin_exit())
         self.protocol("WM_DELETE_WINDOW", lambda: None)
         paymongo.app = self
+        # Start the account-existence watcher
+        self._start_account_watcher()
+
+    # ── account watcher ──────────────────────────────────────────
+
+    def _start_account_watcher(self):
+        """
+        Runs every 3 seconds in a daemon thread.
+        Checks whether the currently-logged-in user still exists in the DB.
+        If not, schedules _on_account_deleted on the main thread.
+        """
+        def _watch():
+            while True:
+                time.sleep(3)
+                if not Auth.user:
+                    continue
+                uname = Auth.username()
+                rows, err = db_exec_safe(
+                    "SELECT id FROM users WHERE username=%s",
+                    (uname,), fetch=True)
+                if err:
+                    # DB unreachable — don't act, just retry
+                    continue
+                if not rows:
+                    # User no longer exists in the database
+                    self.after(0, lambda u=uname: self._on_account_deleted(u))
+
+        threading.Thread(target=_watch, daemon=True).start()
+
+    def _on_account_deleted(self, username):
+        """Called on the main thread when the watcher detects deletion."""
+        # Only show once per session
+        if self._account_deleted_shown:
+            return
+        if not Auth.user or Auth.username() != username:
+            return  # user already logged out on their own
+        self._account_deleted_shown = True
+
+        # Clean up any active session widgets
+        self._cleanup_session_widgets()
+
+        # Force re-lock if unlocked
+        if not self._locked:
+            try:
+                self.relock()
+            except Exception:
+                pass
+
+        # Show the deletion dialog
+        AccountDeletedDialog(
+            self,
+            username=username,
+            on_register=self._deleted_go_register,
+            on_ask_admin=self._deleted_go_login,
+        )
+
+    def _cleanup_session_widgets(self):
+        for attr in ("_session_win", "_taskbar_proxy"):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        if self._tray_active:
+            self._tray_active = False
+            stop_tray()
+
+    def _deleted_go_register(self):
+        """User chose 'Re-create Account' after deletion."""
+        Auth.logout()
+        self._account_deleted_shown = False
+        self.show_register()
+
+    def _deleted_go_login(self):
+        """User chose 'Ask the Admin' after deletion — go to login page."""
+        Auth.logout()
+        self._account_deleted_shown = False
+        self.show_login()
+
+    # ─────────────────────────────────────────────────────────────
 
     def _set_timenet_icon(self, target=None):
         win = target or self
@@ -1849,6 +2022,7 @@ class App(tk.Tk):
 
     def logout(self):
         Auth.logout()
+        self._account_deleted_shown = False
         if not self._locked:
             self.relock()
         else:
@@ -3127,11 +3301,8 @@ class PaymentDialog(tk.Toplevel):
 # ════════════════════════════════════════════════════════════════════
 
 class CustomerDashboard(tk.Frame):
-    # ── Poll intervals ────────────────────────────────────────────
-    # Reduced from 2000 ms to 1000 ms for faster admin→customer sync.
-    # DB queries run in a background thread so UI never blocks.
-    _POLL_INTERVAL_MS  = 1000   # how often to poll the DB
-    _TICK_DB_REFRESH_S = 5      # how often the live tick refreshes duration from DB
+    _POLL_INTERVAL_MS  = 1000
+    _TICK_DB_REFRESH_S = 5
 
     def __init__(self, parent, app):
         super().__init__(parent, bg=BG)
@@ -3192,7 +3363,6 @@ class CustomerDashboard(tk.Frame):
 
         computer = get_this_computer()
 
-        # DB unreachable — don't destroy the current view
         if computer == "DB_ERROR":
             self._view_mode = "no_computers"
             self._show_no_computers(
@@ -3702,7 +3872,6 @@ class CustomerDashboard(tk.Frame):
             self._ticking = False
             return
 
-        # Periodic DB refresh (background thread)
         now_ms_val = now_ms()
         if now_ms_val - self._db_refresh_time >= self._TICK_DB_REFRESH_S * 1000:
             self._db_refresh_time = now_ms_val
@@ -3713,7 +3882,6 @@ class CustomerDashboard(tk.Frame):
                     "SELECT duration, start_time FROM sessions WHERE id=%s",
                     (sess_id,), fetch=True)
                 if err or not rows:
-                    # DB error — keep current values, don't reset session
                     return
                 new_dur   = int(rows[0]["duration"])
                 new_start = _dt_to_ms(rows[0]["start_time"])
@@ -3729,7 +3897,6 @@ class CustomerDashboard(tk.Frame):
 
             threading.Thread(target=_refresh_db, daemon=True).start()
 
-        # Countdown using wall-clock (drift-free)
         total_min = self.active_session.get("duration", 60)
         start_ms  = self.active_session.get("startTime") or now_ms()
         end_ms    = start_ms + total_min * 60 * 1000
@@ -3812,7 +3979,6 @@ class CustomerDashboard(tk.Frame):
             "SELECT * FROM sessions WHERE username=%s AND status='active'",
             (Auth.username(),), fetch=True)
         if err:
-            # DB error — retry after delay instead of giving up
             self.after(800, self._do_force_poll)
             return
         if not rows:
@@ -3829,10 +3995,6 @@ class CustomerDashboard(tk.Frame):
         self._show_active_session()
 
     def _load_data(self):
-        """
-        Synchronous initial load (called at startup and on state changes).
-        Uses db_exec_safe so a DB error doesn't falsely reset the view.
-        """
         if not Auth.user:
             return
         uname = Auth.username()
@@ -3842,7 +4004,6 @@ class CustomerDashboard(tk.Frame):
             (uname,), fetch=True)
 
         if err:
-            # DB unreachable — don't disturb current view
             return
 
         active = norm_session(active_rows[0]) if active_rows else None
@@ -3903,7 +4064,6 @@ class CustomerDashboard(tk.Frame):
         computer = get_this_computer()
 
         if computer == "DB_ERROR":
-            # Don't flip to "no_computers" just because DB hiccupped
             return
 
         pc_status = computer["status"] if computer else "not_found"
@@ -3956,11 +4116,6 @@ class CustomerDashboard(tk.Frame):
             self._show_booking()
 
     def _poll(self):
-        """
-        Background poll — runs every _POLL_INTERVAL_MS.
-        Uses db_exec_safe for all queries so a DB error (VPN drop, timeout)
-        never falsely clears the active session or kicks the customer out.
-        """
         if self._destroyed:
             return
 
@@ -3979,8 +4134,6 @@ class CustomerDashboard(tk.Frame):
                     "SELECT * FROM computers WHERE id=%s",
                     (THIS_COMPUTER_ID,), fetch=True)
 
-                # If any critical query failed, skip this poll cycle entirely
-                # to avoid false state transitions
                 if a_err or p_err or c_err:
                     return
 
@@ -3994,7 +4147,6 @@ class CustomerDashboard(tk.Frame):
             self.after(self._POLL_INTERVAL_MS, self._poll)
 
     def _apply_poll_result(self, active_rows, paused_rows, computer_rows):
-        """Apply poll results on the main Tkinter thread."""
         if not Auth.user or self._destroyed:
             return
 
@@ -4006,7 +4158,6 @@ class CustomerDashboard(tk.Frame):
             if (self._view_mode == "active"
                     and self._last_session_id == active["id"]
                     and self._ticking):
-                # Same session running — sync duration and start_time for add-time
                 self.active_session["duration"] = active["duration"]
                 new_st = active.get("startTime")
                 if new_st and new_st != self.active_session.get("startTime"):
